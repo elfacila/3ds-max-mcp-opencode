@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 3ds Max scene files (local backups, never commit)
+*.max
+*.bak
+
+# Logs
+*.log
+
+# Obsidian workspace cache (keep settings, drop cache)
+.vault-cache/
