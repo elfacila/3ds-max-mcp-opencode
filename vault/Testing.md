@@ -20,6 +20,14 @@ Run: `python test_mcp.py` → exit 0 + `ALL TESTS PASSED`.
 - MCP CLI: `--ping` / `--box` pass; SDK lists exactly `create_primitive`, `execute_python`, `get_scene_info`.
 - Creative session: Torus → Editable Poly → Smooth (Auto Smooth on), twisted tower (Box + Twist 180°), S-curve spline + Sweep, rescale/delete/select flows — all executed live.
 
+## DXF import (`Drawings/Clean CAD.dxf`)
+
+- Audit: 1.4 MB, 7292 entities (6631 LINE), 32 layers, no `$INSUNITS` (treated as mm).
+- Extracted wall layers `A-WALL`, `A-WALL-1`, `A-WALL-2`, `A-WALL-FNSH-1`, `I-WALL` → 197 LINE segments, bbox ≈ 12×9 m, placed 1:1 near origin.
+- Built one `Line` shape per layer (`DXF_<LAYER>`), one spline per segment, corner knots, `updateShape` — 47.6 KB single request.
+- Verified back from Max: 197 splines / 394 knots, zero loss.
+- Open follow-ups: `A-GLAZ` (4019 segments), `A-DOOR` (549 lines + 67 arcs).
+
 ## Manual verification guide
 
 1. 3ds Max 2022 → Scripting → Run Script → `max_listener.py`. Expect `START version=1.6.1-ctypes pump=ctypes` in `%TEMP%\max_mcp_bridge.log`.
