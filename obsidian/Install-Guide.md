@@ -37,6 +37,14 @@ End-to-end deployment of MaxMCP into 3ds Max 2022. For the design behind each st
 - **Update**: drop the newer `.mzp` again — files overwrite, `importlib.reload` applies them live.
 - **Uninstall**: run `MaxMCP_uninstall()` in the Listener, or drag `uninstall.ms` into a viewport; restart Max to fully unload the macro.
 
+## Putting the icon on another toolbar
+
+The bundled docked bar is deliberately tiny (60×34, "MCP" button). For a normal-size icon alongside your other tools:
+
+1. Customize → Customize User Interface → **Toolbars** tab.
+2. Category: **MCP Tools** → drag **Max MCP** onto any toolbar (e.g. the main toolbar).
+3. It uses the bundled `MaxMCP_16i.bmp` / `MaxMCP_24i.bmp` icons automatically; position persists via `cui.saveConfig()`.
+
 ## If it fails
 
 - Listener shows the exact step (`WARNING` lines, never silent aborts).

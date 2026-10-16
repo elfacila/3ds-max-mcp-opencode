@@ -2,6 +2,14 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
+## 2026-10-16 — Installer failure fix + compact button
+
+- **Symptom** (from user's Listener screenshot): every `copyFile` in `install.ms` failed, yet the installer printed "installed" and built a button bar pointing at a never-installed macro ("macro not found" popup); menu setup threw "Unknown system exception".
+- **Fix** (`install.ms` → v1.2.0): `MaxMCP_ensureDir` verifies every destination folder; `MaxMCP_copyOne` falls back to .NET `System.IO.File.Copy` so the Listener shows the true OS reason (access-denied / Controlled-Folder block / lock); install **aborts** instead of fake succeeding when payload/macro copies fail; menu reuses a leftover "MCP Tools" menu via `findMenu` (the likely throw source) with an index guard.
+- **Button**: docked bar shrunk 124×46 → 60×34, label "Max MCP" → "MCP". Real toolbar integration = Customize UI drag-drop (macro auto-appears under "MCP Tools" with bundled icons); steps added to the success dialog and [[Install-Guide]].
+
+## 2026-10-16 — Custom skills manager + vault + push
+
 ## 2026-10-16 — Custom skills manager + vault + push
 
 - **Custom skills subsystem** (`skills_registry.py` → v1.1.0): `custom_skills/` autoload + `reload_skills()` (ast 3.7-gated, per-file errors, built-ins protected), `skill_template()`, metadata extraction, new `node` param type. 25-assert headless suite green.

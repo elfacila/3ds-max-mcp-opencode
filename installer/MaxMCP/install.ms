@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.0.0)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.0)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -24,7 +24,7 @@
         point, and cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.0.0"
+global MaxMCP_version = "1.2.0"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
@@ -41,6 +41,24 @@ global MaxMCP_iconFiles = #("MaxMCP_24i.bmp", "MaxMCP_16i.bmp")
 fn MaxMCP_pluginDir = ((getDir #userScripts) + "/MaxMCP/")
 
 
+fn MaxMCP_ensureDir dir =
+(
+    -- Returns true when dir exists, creating missing parents as needed.
+    if (doesFileExist dir) do (return true)
+    try (makeDir dir all:true) catch ()
+    if (doesFileExist dir) do (return true)
+    -- One level at a time as a last resort (the parent may miss too).
+    try
+    (
+        local parent = getFilenamePath dir
+        if (parent != "" and parent != dir) do (makeDir parent all:true)
+        makeDir dir all:true
+    )
+    catch ()
+    (doesFileExist dir)
+)
+
+
 fn MaxMCP_copyOne src dst =
 (
     if (not (doesFileExist src)) do
@@ -48,9 +66,28 @@ fn MaxMCP_copyOne src dst =
         print ("[MaxMCP] MISSING source file: " + src)
         return false
     )
-    local ok = copyFile src dst
-    if (not ok) do (print ("[MaxMCP] copy FAILED: " + src + " -> " + dst))
-    ok
+    local dir = getFilenamePath dst
+    if (not (MaxMCP_ensureDir dir)) do
+    (
+        print ("[MaxMCP] destination folder cannot be created: " + dir)
+        return false
+    )
+    try (if (copyFile src dst) do (return true)) catch ()
+    -- copyFile failed without a reason: ask the OS directly. This reveals
+    -- access-denied / Controlled-Folder blocks / locked files / bad paths.
+    local detail = "copyFile returned false"
+    try
+    (
+        (dotNetClass "System.IO.File").Copy src dst true
+        detail = ""
+    )
+    catch
+    (
+        detail = (getCurrentException())
+    )
+    if (detail == "" and (doesFileExist dst)) do (return true)
+    print ("[MaxMCP] copy FAILED: " + src + " -> " + dst + " (" + detail + ")")
+    false
 )
 
 
@@ -73,7 +110,24 @@ fn MaxMCP_ensureMenu =
             )
         )
         menuMan.registerMenuContext MaxMCP_menuCtx
-        local m = menuMan.createMenu MaxMCP_barTitle
+        -- Reuse a same-named menu left by an earlier install (createMenu
+        -- throws when the name is taken); empty it to avoid duplicates.
+        local m = try (menuMan.findMenu MaxMCP_barTitle) catch (undefined)
+        if (m == undefined) then
+        (
+            m = menuMan.createMenu MaxMCP_barTitle
+        )
+        else
+        (
+            try
+            (
+                for i = m.numItems() - 1 to 0 by -1 do
+                (
+                    m.removeItemByPosition i
+                )
+            )
+            catch ()
+        )
         local act = menuMan.createActionItem MaxMCP_macroName MaxMCP_category
         if (act == undefined) do
         (
@@ -83,7 +137,9 @@ fn MaxMCP_ensureMenu =
         )
         m.addItem act -1
         local subItem = menuMan.createSubMenuItem MaxMCP_barTitle m
-        bar.addItem subItem (bar.numItems() - 1)  -- insert before Help
+        local pos = bar.numItems() - 1  -- insert before Help
+        if (pos < 0) do (pos = -1)
+        bar.addItem subItem pos
         menuMan.updateMenuBar()
         true
     )
@@ -153,25 +209,35 @@ fn MaxMCP_install =
     local macroDir = (getDir #userMacros) + "/"
     local iconsDir = (getDir #userIcons) + "/"
     local startupDir = (getDir #startupScripts) + "/"
-    makeDir dstDir all:true
+    print ("[MaxMCP] src:    " + srcDir)
+    print ("[MaxMCP] dst:    " + dstDir)
+    print ("[MaxMCP] macros: " + macroDir)
+    if (not (MaxMCP_ensureDir dstDir)) do
+    (
+        local dirFail = "MaxMCP install ABORTED.\n\nCannot create folder:\n" + dstDir + \
+            "\n\nLikely causes: antivirus / Controlled Folder Access blocking 3ds Max, or a locked path. Fix access, then drop the .mzp again."
+        print ("[MaxMCP] " + dirFail)
+        messageBox dirFail title:"MaxMCP install failed"
+        return false
+    )
 
-    local ok = true
+    local payloadOK = true
 
     -- 1. Python payload.
     for f in MaxMCP_pyFiles do
     (
-        if (not (MaxMCP_copyOne (srcDir + f) (dstDir + f))) do (ok = false)
+        if (not (MaxMCP_copyOne (srcDir + f) (dstDir + f))) do (payloadOK = false)
     )
 
     -- 2. MacroScript into userMacros + live registration for this session.
-    if (MaxMCP_copyOne (srcDir + "MCP_MacroScript.ms") (macroDir + "MaxMCP_Launcher.ms")) then
+    local macroOK = MaxMCP_copyOne (srcDir + "MCP_MacroScript.ms") (macroDir + "MaxMCP_Launcher.ms")
+    if (macroOK) do
     (
         try (fileIn (macroDir + "MaxMCP_Launcher.ms")) catch
         (
             print "[MaxMCP] WARNING: macro installed but live registration failed; restart Max."
         )
     )
-    else (ok = false)
 
     -- 3. Icons into userIcons (non-fatal if missing).
     for f in MaxMCP_iconFiles do
@@ -183,14 +249,28 @@ fn MaxMCP_install =
     )
 
     -- 4. Button bar into startup scripts + show it right now.
-    if (MaxMCP_copyOne (srcDir + "MaxMCP_Toolbar.ms") (startupDir + "MaxMCP_Toolbar.ms")) then
+    local barOK = MaxMCP_copyOne (srcDir + "MaxMCP_Toolbar.ms") (startupDir + "MaxMCP_Toolbar.ms")
+    if (barOK) do
     (
         try (fileIn (startupDir + "MaxMCP_Toolbar.ms")) catch
         (
             print "[MaxMCP] WARNING: button bar will appear after restart."
         )
     )
-    else (ok = false)
+
+    -- Abort here (not after registering half a UI): a bar or menu without
+    -- the payload/macro behind it only produces "macro not found" popups.
+    if ((not payloadOK) or (not macroOK)) do
+    (
+        local fail = "MaxMCP install ABORTED.\n\nFile copy failed (the MAXScript Listener shows the exact OS reason for each file).\nNothing was registered.\n\nLikely causes: antivirus / Controlled Folder Access blocking 3ds Max, or locked files. Fix access, then drop the .mzp again."
+        print ("[MaxMCP] " + fail)
+        messageBox fail title:"MaxMCP install failed"
+        return false
+    )
+    if (not barOK) do
+    (
+        print "[MaxMCP] WARNING: button bar copy failed; continuing without it (macro + menu still work)."
+    )
 
     -- 5. Persistent main-menu entry.
     local menuOK = MaxMCP_ensureMenu()
@@ -205,16 +285,18 @@ fn MaxMCP_install =
     )
 
     local menuTxt = (if menuOK then "added" else "SKIPPED (see Listener)")
-    local barTxt = (if nativeOK then "native CUI toolbar" else "docked button bar")
+    local barTxt = (if nativeOK then "native CUI toolbar" else "compact docked bar")
+    if (not barOK) do (barTxt = "SKIPPED (copy failed)")
     local summary = "MaxMCP v" + MaxMCP_version + " installed.\n\n" + \
         "Python:  " + dstDir + "\n" + \
         "Macro:  MCP Tools  >  Max MCP\n" + \
         "Menu:  " + menuTxt + "\n" + \
         "Toolbar:  " + barTxt + "\n\n" + \
-        "Press the Max MCP button to show/hide the panel."
+        "Press the MCP button to show/hide the panel.\n\n" + \
+        "Tip: to put the icon on any existing toolbar, open Customize > Customize User Interface > Toolbars, pick category 'MCP Tools', and drag 'Max MCP' onto that toolbar."
     print ("[MaxMCP] " + summary)
     messageBox summary title:"MaxMCP installed"
-    (ok and menuOK)
+    (payloadOK and macroOK and menuOK)
 )
 
 

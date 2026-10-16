@@ -1,21 +1,25 @@
 /* ==========================================================================
-   MaxMCP_Toolbar.ms — floating/docked "MCP Tools" button bar.
+   MaxMCP_Toolbar.ms — compact floating/docked "MCP" button.
    The installer copies this file into (getDir #startupScripts) so 3ds Max
-   runs it at every startup (the bar persists across sessions), and fileIns
-   it once immediately so the button appears without a restart.
+   runs it at every startup (the button persists across sessions), and
+   fileIns it once immediately so it appears without a restart.
    Safe to re-run: any previous bar instance is unregistered first.
    The button calls the "MCP Tools" > "MaxMCP_Launcher" macroScript, so the
    toggle logic (no duplicate windows) lives in one place: max_mcp_ui.py.
+
+   To place the icon on ANOTHER toolbar instead (e.g. the main toolbar):
+   Customize > Customize User Interface > Toolbars > Category "MCP Tools"
+   > drag "Max MCP" onto any toolbar. It uses the bundled 16/24px icons.
    ========================================================================== */
 
 -- Tear down a previous instance, if any.
 try (cui.unRegisterDialogBar MaxMCP_BarRO) catch ()
 try (destroyDialog MaxMCP_BarRO) catch ()
 
-rollout MaxMCP_BarRO "MCP Tools" width:124 height:46
+rollout MaxMCP_BarRO "MCP" width:60 height:34
 (
-    button btn_launch "Max MCP" width:108 height:28 align:#center \
-        tooltip:"MCP Bridge: Server + Skills (show/hide)"
+    button btn_launch "MCP" width:48 height:22 align:#center \
+        tooltip:"MaxMCP Server + Skills (show/hide). Tip: Customize > Customize User Interface > Toolbars > MCP Tools > drag Max MCP onto any toolbar."
     on btn_launch pressed do
     (
         -- Macro was registered from (getDir #userMacros); resolve at click
