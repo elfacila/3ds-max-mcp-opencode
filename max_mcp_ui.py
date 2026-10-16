@@ -936,8 +936,8 @@ if _QT_AVAILABLE:
         def __init__(self, parent=None):
             super(MaxMcpWindow, self).__init__(parent)
             self.setWindowTitle("MCP Bridge : Server + Skills (3ds Max 2022)")
-            self.setMinimumSize(620, 700)
-            self.resize(680, 760)
+            self.setMinimumSize(700, 700)
+            self.resize(780, 760)
             self.setWindowFlags(QtCore.Qt.Window)
             self.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
 
@@ -1120,8 +1120,9 @@ if _QT_AVAILABLE:
             self.skill_tree = QtWidgets.QTreeWidget()
             self.skill_tree.setColumnCount(2)
             self.skill_tree.setHeaderLabels(["Skill", "Status"])
-            self.skill_tree.setMinimumWidth(220)
-            self.skill_tree.setMaximumWidth(300)
+            self.skill_tree.setMinimumWidth(200)
+            # No maximum width: the splitter below lets the user drag the
+            # divider, so long category/skill names are never trapped.
             try:
                 header = self.skill_tree.header()
                 header.setSectionResizeMode(
@@ -1133,7 +1134,9 @@ if _QT_AVAILABLE:
             self.skill_tree.itemSelectionChanged.connect(
                 self.on_skill_selected)
             self.skill_tree.itemChanged.connect(self.on_tree_item_changed)
-            mid_layout.addWidget(self.skill_tree, 0)
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+            splitter.addWidget(self.skill_tree)
+            mid_layout.addWidget(splitter)
 
             right = QtWidgets.QWidget()
             right_layout = QtWidgets.QVBoxLayout(right)
@@ -1156,7 +1159,13 @@ if _QT_AVAILABLE:
             self.exec_btn.setEnabled(False)
             self.exec_btn.clicked.connect(self.on_execute_locally)
             right_layout.addWidget(self.exec_btn)
-            mid_layout.addWidget(right, 1)
+            splitter.addWidget(right)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 2)
+            try:
+                splitter.setSizes([280, 400])
+            except Exception:
+                pass
             root.addWidget(mid, 1)
 
             # Console.
