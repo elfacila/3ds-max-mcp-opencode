@@ -2,7 +2,11 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
-## 2026-10-16 — GC crash fix (installer v1.2.6, response to garbage-collection dialog)
+## 2026-10-16 — ✅ Install saga closed: v1.2.6 confirmed working in-session
+
+- User confirmation: **"done! all is good."** No GC dialog on the v1.2.6 drop; install completes, bar + macro + panel all present.
+- Final chain that got here: overwrite-safe copies → per-user Startup fallback (Program Files elevation) → `.ms` → `.mcr` auto-load fix → forced-`gc` removal. Full story in the entries below.
+- Remaining hygiene (only if trouble ever returns): bar create/destroy cycle is the documented next suspect; `MaxMCP_Diagnose.ms` + `install_receipt.txt` stay in place for forensics.
 
 - **Symptom**: "MAXScript Garbage Collection Error" modal over the v1.2.5 success dialog.
 - **Cause**: the explicit `gc light:true` I added after `FClose` — forcing a collection with BinStream handles in flight. Removed by design (FClose suffices); handle audit of the whole copy chain (every `fopen` paired on all paths); shell-copy existence check polled 2 s; diagnose receipt-read now closes on all paths (same leak class).
