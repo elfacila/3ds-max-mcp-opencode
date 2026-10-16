@@ -107,7 +107,7 @@ CLIENT_TIMEOUT = 30.0
 EXEC_WAIT_TIMEOUT = 120.0
 BUFFER_SIZE = 65536
 MAX_CODE_SIZE = 1024 * 1024
-UI_VERSION = "1.1.0"
+UI_VERSION = "1.2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,15 @@ def execute_code_snippet(code):
 # ---------------------------------------------------------------------------
 # Transport: daemon-thread listener + main-thread pump queue.
 # No Qt here -- usable headless (tests) and inside Max.
+#
+# Skill-catalog requests (the "tools/list" contract consumed by MCP hosts):
+#   {"id", "tools": "list"}                  -> enabled-only catalog + version
+#   {"id", "tools": "await_change", "version": N}
+#      -> immediate catalog when N is stale, else a parked long-poll that is
+#         answered the moment a profile/toggle/reload changes the catalog
+#         (bounded by EXEC_WAIT_TIMEOUT; re-watch afterwards).
 # ---------------------------------------------------------------------------
+_PENDING = object()  # pump sentinel: holder parked, no response to send yet
 class McpBridgeServer(object):
     """TCP bridge whose scene work always runs in the pumping (main) thread."""
 
@@ -177,6 +185,13 @@ class McpBridgeServer(object):
         self.port = DEFAULT_PORT
         self.log_fn = log_fn or (lambda msg: None)
         self.client_fn = client_fn or (lambda n: None)
+        self._watchers = []  # [(holder, req_id)] parked await_change polls
+        try:
+            if skills_registry is not None:
+                skills_registry.on_tools_changed(
+                    self._on_registry_tools_changed)
+        except Exception:
+            pass
 
     # -- state ----------------------------------------------------------
     @property
@@ -286,6 +301,22 @@ class McpBridgeServer(object):
         with self._lock:
             self._active_clients = 0
         self._set_clients(0)
+        # Release parked catalog watchers so no client hangs on stop.
+        with self._lock:
+            watchers = self._watchers
+            self._watchers = []
+        for holder, req_id in watchers:
+            try:
+                holder["response"] = {
+                    "id": req_id, "status": "error", "output": "",
+                    "result": None, "error": "Server stopped.",
+                    "version": UI_VERSION}
+            except Exception:
+                pass
+            try:
+                holder["event"].set()
+            except Exception:
+                pass
         self._log("listener stopped.")
 
     # -- network (background threads: never touch pymxs/Qt widgets) -----
@@ -393,11 +424,113 @@ class McpBridgeServer(object):
         return "skill: %s params=%s" % (skill, request.get("params",
                 request.get("arguments", request.get("args", {}))))
 
+    # -- advertised skill catalog (MCP tools/list contract) ---------------
+    def _tools_list_result(self):
+        """Build the enabled-only catalog payload (no id set by caller)."""
+        try:
+            version = skills_registry.tools_version() \
+                if _SKILLS_AVAILABLE else 0
+        except Exception:
+            version = 0
+        try:
+            active = skills_registry.get_active_profile() \
+                if _SKILLS_AVAILABLE else ""
+        except Exception:
+            active = ""
+        try:
+            skills = skills_registry.list_enabled_skills() \
+                if _SKILLS_AVAILABLE else []
+        except Exception:
+            skills = []
+        return {"id": None, "status": "ok",
+                "output": "tools v%d: %d enabled (profile %r)"
+                          % (version, len(skills), active),
+                "result": {"version": version,
+                           "active_profile": active,
+                           "skills": _json_safe(skills)},
+                "error": None,
+                "version": UI_VERSION,
+                "tools_version": version}
+
+    def _answer_watchers(self):
+        """Push the fresh catalog to every parked await_change poll."""
+        try:
+            current = self._tools_list_result()
+        except Exception:
+            current = None
+        with self._lock:
+            pending = self._watchers
+            self._watchers = []
+        for holder, req_id in pending:
+            try:
+                if current is None:
+                    holder["response"] = {
+                        "id": req_id, "status": "error", "output": "",
+                        "result": None,
+                        "error": "Catalog unavailable.",
+                        "version": UI_VERSION}
+                else:
+                    resp = dict(current)
+                    resp["id"] = req_id
+                    resp["update"] = "changed"
+                    holder["response"] = resp
+            except Exception:
+                try:
+                    holder["response"] = {
+                        "id": req_id, "status": "error", "output": "",
+                        "result": None, "error": "Catalog error.",
+                        "version": UI_VERSION}
+                except Exception:
+                    pass
+            try:
+                holder["event"].set()
+            except Exception:
+                pass
+
+    def _on_registry_tools_changed(self, version, count):
+        """Registry hook: a toggle/profile/reload changed the catalog."""
+        self._answer_watchers()
+
     # -- main-thread execution ------------------------------------------
-    def _execute_request(self, request):
-        """Build the response dict. CALL ONLY FROM THE MAIN THREAD."""
+    def _execute_request(self, request, holder=None):
+        """Build the response dict. CALL ONLY FROM THE MAIN THREAD.
+
+        Returns the _PENDING sentinel (instead of a dict) to park an
+        await_change long-poll; pump_once() then leaves the holder waiting.
+        """
         req_id = request.get("id")
         try:
+            tools_cmd = request.get("tools")
+            if isinstance(tools_cmd, str):
+                if tools_cmd == "list":
+                    resp = self._tools_list_result()
+                    resp["id"] = req_id
+                    self._log("tools/list served: %s" % resp["output"])
+                    return resp
+                if tools_cmd == "await_change":
+                    try:
+                        client_v = int(request.get("version", -1))
+                    except Exception:
+                        client_v = -1
+                    try:
+                        cur = skills_registry.tools_version() \
+                            if _SKILLS_AVAILABLE else 0
+                    except Exception:
+                        cur = 0
+                    if client_v != cur or holder is None:
+                        resp = self._tools_list_result()
+                        resp["id"] = req_id
+                        return resp
+                    with self._lock:
+                        self._watchers.append((holder, req_id))
+                    self._log("tools watch parked (client v%d, live v%d)."
+                              % (client_v, cur))
+                    return _PENDING
+                return {"id": req_id, "status": "error", "output": "",
+                        "result": None,
+                        "error": "Unknown tools command %r. Use 'list' or "
+                                 "'await_change'." % (tools_cmd,),
+                        "version": UI_VERSION}
             if "code" in request and request.get("code") is not None:
                 status, output, result, error = execute_code_snippet(
                     request.get("code"))
@@ -453,14 +586,22 @@ class McpBridgeServer(object):
             except queue.Empty:
                 break
             try:
-                holder["response"] = self._execute_request(request)
+                response = self._execute_request(request, holder)
             except Exception:
-                holder["response"] = {
+                response = {
                     "id": None, "status": "error", "output": "",
                     "result": None, "error": traceback.format_exc(),
                     "version": UI_VERSION}
-            finally:
+            if response is _PENDING:
+                continue  # parked long-poll; holder stays waiting
+            try:
+                holder["response"] = response
+            except Exception:
+                pass
+            try:
                 holder["event"].set()
+            except Exception:
+                pass
             count += 1
         return count
 
@@ -485,6 +626,7 @@ if _QT_AVAILABLE:
         log_line = QtCore.Signal(str)
         clients_changed = QtCore.Signal(int)
         status_changed = QtCore.Signal(bool, str)
+        tools_changed = QtCore.Signal(int, int, str)
 
     class AddSkillDialog(QtWidgets.QDialog):
         """Create (or edit) a custom skill file in custom_skills/.
@@ -804,6 +946,8 @@ if _QT_AVAILABLE:
                 log_fn=self._on_bg_log, client_fn=self._on_bg_clients)
             self._param_widgets = {}
             self._current_skill = None
+            self._tree_guard = False
+            self._profile_guard = False
 
             self._build_ui()
             self._refresh_skill_tree()
@@ -812,6 +956,13 @@ if _QT_AVAILABLE:
             self.signals.log_line.connect(self._append_log)
             self.signals.clients_changed.connect(self._update_clients)
             self.signals.status_changed.connect(self._set_status)
+            self.signals.tools_changed.connect(self._on_tools_changed)
+            try:
+                if _SKILLS_AVAILABLE:
+                    skills_registry.on_tools_changed(
+                        self._on_registry_tools_changed)
+            except Exception:
+                pass
 
             self._pump = QtCore.QTimer(self)
             self._pump.setInterval(PUMP_INTERVAL_MS)
@@ -820,6 +971,18 @@ if _QT_AVAILABLE:
             self._log("MCP panel ready. Skills: %s"
                       % (len(skills_registry.SKILL_REGISTRY)
                          if _SKILLS_AVAILABLE else "registry missing"))
+            try:
+                if _SKILLS_AVAILABLE:
+                    perr = skills_registry.get_profiles_error()
+                    if perr:
+                        self._log("profiles note: %s" % perr)
+                    self._log("active profile: %r (%d enabled)."
+                              % (skills_registry.get_active_profile(),
+                                 len([n for n in
+                                      skills_registry.SKILL_REGISTRY
+                                      if skills_registry.is_skill_enabled(n)])))
+            except Exception:
+                pass
 
         # -- background-thread callbacks (signal hop, never touch widgets) --
         def _on_bg_log(self, msg):
@@ -834,6 +997,23 @@ if _QT_AVAILABLE:
                 self.signals.clients_changed.emit(int(n))
             except Exception:
                 pass
+
+        def _on_registry_tools_changed(self, version, count):
+            # Registry hook (any thread) -> queued signal -> main-thread log.
+            try:
+                active = skills_registry.get_active_profile()
+            except Exception:
+                active = ""
+            try:
+                self.signals.tools_changed.emit(int(version), int(count),
+                                                str(active))
+            except Exception:
+                pass
+
+        def _on_tools_changed(self, version, count, active):
+            self._log("[MCP] tools/list_changed broadcast (v%d): %d "
+                      "skill(s) advertised (profile %r)."
+                      % (version, count, active))
 
         def _log(self, msg):
             self._append_log("[%s] %s" % (time.strftime("%H:%M:%S"), msg))
@@ -901,14 +1081,58 @@ if _QT_AVAILABLE:
             manage_row.addWidget(self.reload_btn)
             manage_row.addStretch(1)
             mid_outer.addLayout(manage_row)
+            # Profile / preset bar: instant switching for UI + MCP catalog.
+            prof_row = QtWidgets.QHBoxLayout()
+            prof_row.addWidget(QtWidgets.QLabel("Profile:"))
+            self.profile_combo = QtWidgets.QComboBox()
+            self.profile_combo.setMinimumWidth(160)
+            self.profile_combo.setToolTip(
+                "Skill preset. Selecting applies it instantly to the "
+                "checkboxes and the advertised MCP toolset.")
+            self.profile_combo.currentIndexChanged.connect(
+                self.on_profile_selected)
+            prof_row.addWidget(self.profile_combo, 1)
+            self.profile_save_btn = QtWidgets.QPushButton("Save / Overwrite")
+            self.profile_save_btn.setToolTip(
+                "Store the current checkbox states into the active profile.")
+            self.profile_save_btn.clicked.connect(self.on_profile_save)
+            prof_row.addWidget(self.profile_save_btn)
+            self.profile_new_btn = QtWidgets.QPushButton("New (+)")
+            self.profile_new_btn.setToolTip("Create a new named preset.")
+            self.profile_new_btn.clicked.connect(self.on_profile_new)
+            prof_row.addWidget(self.profile_new_btn)
+            self.profile_del_btn = QtWidgets.QPushButton("Delete (-)")
+            self.profile_del_btn.setToolTip(
+                "Delete the selected preset (All Skills is protected).")
+            self.profile_del_btn.clicked.connect(self.on_profile_delete)
+            prof_row.addWidget(self.profile_del_btn)
+            self.select_all_btn = QtWidgets.QPushButton("Select All")
+            self.select_all_btn.setToolTip("Enable every skill.")
+            self.select_all_btn.clicked.connect(self.on_select_all)
+            prof_row.addWidget(self.select_all_btn)
+            self.deselect_all_btn = QtWidgets.QPushButton("Deselect All")
+            self.deselect_all_btn.setToolTip("Disable every skill.")
+            self.deselect_all_btn.clicked.connect(self.on_deselect_all)
+            prof_row.addWidget(self.deselect_all_btn)
+            mid_outer.addLayout(prof_row)
             mid_layout = QtWidgets.QHBoxLayout()
             mid_outer.addLayout(mid_layout, 1)
             self.skill_tree = QtWidgets.QTreeWidget()
-            self.skill_tree.setHeaderHidden(True)
-            self.skill_tree.setMinimumWidth(190)
-            self.skill_tree.setMaximumWidth(240)
+            self.skill_tree.setColumnCount(2)
+            self.skill_tree.setHeaderLabels(["Skill", "Status"])
+            self.skill_tree.setMinimumWidth(220)
+            self.skill_tree.setMaximumWidth(300)
+            try:
+                header = self.skill_tree.header()
+                header.setSectionResizeMode(
+                    0, QtWidgets.QHeaderView.Stretch)
+                header.setSectionResizeMode(
+                    1, QtWidgets.QHeaderView.ResizeToContents)
+            except Exception:
+                pass
             self.skill_tree.itemSelectionChanged.connect(
                 self.on_skill_selected)
+            self.skill_tree.itemChanged.connect(self.on_tree_item_changed)
             mid_layout.addWidget(self.skill_tree, 0)
 
             right = QtWidgets.QWidget()
@@ -999,45 +1223,184 @@ if _QT_AVAILABLE:
                 self._log("START FAILED: %s" % msg)
                 QtWidgets.QMessageBox.warning(self, "MCP Bridge", msg)
 
-        # -- skills browser ----------------------------------------------
-        def _refresh_skill_tree(self):
-            self.skill_tree.clear()
+        # -- skills browser (checkboxes + live status badges) ------------
+        STATUS_COLORS = {"on": "#2ecc71", "off": "#8a8f98", "run": "#f39c12"}
+
+        def _set_skill_visual(self, item, enabled, running=False):
+            """Badge cell + name tint. Grey=disabled, green=enabled,
+            amber=executing. Never raises."""
+            try:
+                state = "run" if running else ("on" if enabled else "off")
+                item.setText(1, {"on": "● ON", "off": "● OFF",
+                                 "run": "● RUN"}[state])
+                item.setForeground(
+                    1, QtGui.QBrush(QtGui.QColor(self.STATUS_COLORS[state])))
+                item.setForeground(
+                    0, QtGui.QBrush(QtGui.QColor(
+                        "#ffffff" if (enabled or running)
+                        else self.STATUS_COLORS["off"])))
+            except Exception:
+                pass
+
+        def _update_category_state(self, cat_item):
+            try:
+                states = [cat_item.child(i).checkState(0)
+                          for i in range(cat_item.childCount())]
+                if not states:
+                    return
+                if all(s == QtCore.Qt.Checked for s in states):
+                    cat_item.setCheckState(0, QtCore.Qt.Checked)
+                elif all(s == QtCore.Qt.Unchecked for s in states):
+                    cat_item.setCheckState(0, QtCore.Qt.Unchecked)
+                else:
+                    cat_item.setCheckState(0, QtCore.Qt.PartiallyChecked)
+            except Exception:
+                pass
+
+        def _refresh_profile_combo(self):
             if not _SKILLS_AVAILABLE:
-                item = QtWidgets.QTreeWidgetItem(
-                    ["(skills_registry failed to load)"])
-                item.setDisabled(True)
-                self.skill_tree.addTopLevelItem(item)
-                self._log("skills_registry import failed: %s"
-                          % (_SKILLS_ERROR,))
                 return
-            grouped = skills_registry.skills_by_category()
-            for category in sorted(grouped):
-                cat_item = QtWidgets.QTreeWidgetItem([category])
-                cat_item.setExpanded(True)
-                font = cat_item.font(0)
-                font.setBold(True)
-                cat_item.setFont(0, font)
-                self.skill_tree.addTopLevelItem(cat_item)
-                for skill in sorted(grouped[category],
-                                    key=lambda s: s["name"]):
-                    label = skill.get("title") or skill["name"]
-                    child = QtWidgets.QTreeWidgetItem([label])
-                    child.setData(0, QtCore.Qt.UserRole, skill["name"])
-                    try:
-                        src = skills_registry.skill_source_path(
-                            skill["name"])
-                        origin = ("custom file:\n%s" % src) if src \
-                            else "built-in (skills_registry.py)"
-                        child.setToolTip(
-                            0, "%s\n%s\n\n%s" % (skill["name"], origin,
-                                                 skill.get("description", "")))
-                    except Exception:
+            self._profile_guard = True
+            try:
+                combo = self.profile_combo
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(skills_registry.get_all_profiles())
+                try:
+                    idx = combo.findText(
+                        skills_registry.get_active_profile())
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.profile_combo.blockSignals(False)
+                except Exception:
+                    pass
+                self._profile_guard = False
+
+        def _refresh_skill_tree(self):
+            self._refresh_profile_combo()
+            try:
+                self.skill_tree.blockSignals(True)
+                self.skill_tree.clear()
+                if not _SKILLS_AVAILABLE:
+                    item = QtWidgets.QTreeWidgetItem(
+                        ["(skills_registry failed to load)", ""])
+                    item.setDisabled(True)
+                    self.skill_tree.addTopLevelItem(item)
+                    self._log("skills_registry import failed: %s"
+                              % (_SKILLS_ERROR,))
+                    return
+                grouped = skills_registry.skills_by_category()
+                for category in sorted(grouped):
+                    cat_item = QtWidgets.QTreeWidgetItem([category, ""])
+                    cat_item.setExpanded(True)
+                    font = cat_item.font(0)
+                    font.setBold(True)
+                    cat_item.setFont(0, font)
+                    cat_item.setFlags(cat_item.flags()
+                                      | QtCore.Qt.ItemIsUserCheckable
+                                      | QtCore.Qt.ItemIsTristate)
+                    for skill in sorted(grouped[category],
+                                        key=lambda s: s["name"]):
+                        label = skill.get("title") or skill["name"]
+                        child = QtWidgets.QTreeWidgetItem([label, ""])
+                        child.setData(0, QtCore.Qt.UserRole, skill["name"])
+                        child.setFlags(child.flags()
+                                       | QtCore.Qt.ItemIsUserCheckable)
+                        enabled = bool(skill.get("enabled", True))
+                        child.setCheckState(
+                            0, QtCore.Qt.Checked if enabled
+                            else QtCore.Qt.Unchecked)
+                        self._set_skill_visual(child, enabled)
                         try:
+                            src = skills_registry.skill_source_path(
+                                skill["name"])
+                            origin = ("custom file:\n%s" % src) if src \
+                                else "built-in (skills_registry.py)"
                             child.setToolTip(
-                                0, skill.get("description", ""))
+                                0, "%s\n%s\n\n%s"
+                                % (skill["name"], origin,
+                                   skill.get("description", "")))
                         except Exception:
-                            pass
-                    cat_item.addChild(child)
+                            try:
+                                child.setToolTip(
+                                    0, skill.get("description", ""))
+                            except Exception:
+                                pass
+                        cat_item.addChild(child)
+                    self._update_category_state(cat_item)
+                    self.skill_tree.addTopLevelItem(cat_item)
+            finally:
+                try:
+                    self.skill_tree.blockSignals(False)
+                except Exception:
+                    pass
+
+        def _find_skill_item(self, name):
+            try:
+                for ci in range(self.skill_tree.topLevelItemCount()):
+                    cat = self.skill_tree.topLevelItem(ci)
+                    for ki in range(cat.childCount()):
+                        child = cat.child(ki)
+                        if str(child.data(0, QtCore.Qt.UserRole)) == name:
+                            return child
+            except Exception:
+                pass
+            return None
+
+        def on_tree_item_changed(self, item, column):
+            """Checkbox flip -> live registry toggle (MCP syncs instantly)."""
+            if column != 0 or not _SKILLS_AVAILABLE:
+                return
+            if self._tree_guard:
+                return
+            self._tree_guard = True
+            try:
+                name = item.data(0, QtCore.Qt.UserRole)
+                if not name:
+                    # Category header: push its state to every child.
+                    state = item.checkState(0)
+                    if state == QtCore.Qt.PartiallyChecked:
+                        return
+                    for i in range(item.childCount()):
+                        child = item.child(i)
+                        child.setCheckState(0, state)
+                        self._apply_child_check(child, state
+                                                == QtCore.Qt.Checked)
+                else:
+                    self._apply_child_check(
+                        item, item.checkState(0) == QtCore.Qt.Checked)
+                    parent = item.parent()
+                    if parent is not None:
+                        self._update_category_state(parent)
+            finally:
+                self._tree_guard = False
+
+        def _apply_child_check(self, child, enabled):
+            try:
+                name = str(child.data(0, QtCore.Qt.UserRole) or "")
+            except Exception:
+                return
+            if not name:
+                return
+            try:
+                ok, msg = skills_registry.set_skill_enabled(name, enabled)
+            except Exception:
+                self._log("toggle FAILED:\n%s" % traceback.format_exc())
+                return
+            try:
+                live = skills_registry.is_skill_enabled(name)
+            except Exception:
+                live = enabled
+            self._set_skill_visual(child, live)
+            self._log("[TOGGLE] %s" % msg)
+            if not ok:
+                QtWidgets.QMessageBox.warning(self, "Skill toggle", msg)
 
         def on_skill_selected(self):
             items = self.skill_tree.selectedItems()
@@ -1065,7 +1428,14 @@ if _QT_AVAILABLE:
                 self.exec_btn.setEnabled(False)
                 return
             self._current_skill = name
-            self.skill_title.setText(spec.title or name)
+            try:
+                enabled_now = skills_registry.is_skill_enabled(name)
+            except Exception:
+                enabled_now = True
+            title = spec.title or name
+            if not enabled_now:
+                title += " (disabled)"
+            self.skill_title.setText(title)
             self.skill_desc.setText(spec.description)
             try:
                 src = skills_registry.skill_source_path(name)
@@ -1158,21 +1528,197 @@ if _QT_AVAILABLE:
                 self._log("cannot execute: skills_registry unavailable.")
                 return
             params = self._collect_params()
+            try:
+                disabled = not skills_registry.is_skill_enabled(
+                    self._current_skill)
+            except Exception:
+                disabled = False
+            if disabled:
+                self._log("[LOCAL] override: %r is disabled by profile %r; "
+                          "explicit click executes anyway (MCP stays blocked)."
+                          % (self._current_skill,
+                             skills_registry.get_active_profile()))
             self._log("execute locally: %s %s"
                       % (self._current_skill, params))
-            # Already on the main thread (button click) -- direct call is
-            # scene-safe.  execute_skill never raises, but guard anyway.
+            item = self._find_skill_item(self._current_skill)
+            if item is not None:
+                self._set_skill_visual(item, True, running=True)
             try:
+                # Already on the main thread (button click) -- direct call
+                # is scene-safe.  execute_skill never raises, but guard
+                # anyway.  enforce_enabled=False: an explicit local click
+                # bypasses the profile gate that remote dispatch enforces.
                 result = skills_registry.execute_skill(
-                    self._current_skill, params)
+                    self._current_skill, params, enforce_enabled=False)
             except Exception:
                 result = {"ok": False, "error": traceback.format_exc()}
+            if item is not None:
+                try:
+                    live = skills_registry.is_skill_enabled(
+                        self._current_skill)
+                except Exception:
+                    live = True
+                self._set_skill_visual(item, live)
             ok = bool(result.get("ok"))
             self._log("result ok=%s: %s"
                       % (ok, json.dumps(result)[:1000]))
             if not ok and result.get("error"):
                 QtWidgets.QMessageBox.warning(
                     self, "Skill failed", str(result["error"])[:1500])
+
+        # -- profiles (instant UI + MCP switching) -----------------------
+        def on_profile_selected(self, index):
+            if self._profile_guard or not _SKILLS_AVAILABLE:
+                return
+            try:
+                name = str(self.profile_combo.itemText(index))
+            except Exception:
+                return
+            if not name:
+                return
+            try:
+                report = skills_registry.apply_profile(name)
+            except Exception:
+                self._log("profile apply FAILED:\n%s" % traceback.format_exc())
+                return
+            if not report.get("ok"):
+                self._log("profile FAILED: %s" % report.get("error"))
+                QtWidgets.QMessageBox.warning(
+                    self, "Profile", str(report.get("error"))[:800])
+                self._refresh_profile_combo()
+                return
+            self._refresh_skill_tree()
+            if self._current_skill:
+                self._select_skill(self._current_skill)
+            self._log("[PROFILE] Switched to %r (%d active skills)."
+                      % (report["profile"], report["total"]))
+            for dropped in report.get("dropped", []):
+                self._log("profile note: unknown skill %r ignored."
+                          % dropped)
+            if report.get("persist_warning"):
+                self._log("profile warning: active choice may not persist: "
+                          "%s" % report["persist_warning"])
+
+        def on_profile_save(self):
+            if not _SKILLS_AVAILABLE:
+                self._log("profile save: skills_registry unavailable.")
+                return
+            name = str(self.profile_combo.currentText())
+            if name == skills_registry.PROFILE_ALL:
+                QtWidgets.QMessageBox.information(
+                    self, "Save Profile",
+                    "%r is dynamic (always all skills) and cannot be "
+                    "overwritten. Use New (+) for a custom preset."
+                    % skills_registry.PROFILE_ALL)
+                return
+            try:
+                checked = [n for n in skills_registry.SKILL_REGISTRY
+                           if skills_registry.is_skill_enabled(n)]
+                ok, msg = skills_registry.save_profile(name, checked)
+            except Exception:
+                self._log("profile save FAILED:\n%s" % traceback.format_exc())
+                return
+            self._log("[PROFILE] %s" % msg)
+            if not ok:
+                QtWidgets.QMessageBox.warning(self, "Save Profile", msg)
+
+        def on_profile_new(self):
+            if not _SKILLS_AVAILABLE:
+                return
+            try:
+                text, accepted = QtWidgets.QInputDialog.getText(
+                    self, "New Profile", "Profile name:")
+            except Exception:
+                self._log("profile dialog FAILED:\n%s"
+                          % traceback.format_exc())
+                return
+            if not accepted:
+                return
+            name = str(text).strip()
+            if not name:
+                QtWidgets.QMessageBox.warning(
+                    self, "New Profile", "Name must not be empty.")
+                return
+            if name == skills_registry.PROFILE_ALL:
+                QtWidgets.QMessageBox.warning(
+                    self, "New Profile",
+                    "%r is reserved." % skills_registry.PROFILE_ALL)
+                return
+            try:
+                exists = name in skills_registry.get_all_profiles()
+            except Exception:
+                exists = False
+            if exists:
+                answer = QtWidgets.QMessageBox.question(
+                    self, "New Profile",
+                    "%r exists. Overwrite with current checkboxes?" % name)
+                if answer != QtWidgets.QMessageBox.Yes:
+                    return
+            try:
+                checked = [n for n in skills_registry.SKILL_REGISTRY
+                           if skills_registry.is_skill_enabled(n)]
+                ok, msg = skills_registry.save_profile(name, checked)
+            except Exception:
+                self._log("profile save FAILED:\n%s" % traceback.format_exc())
+                return
+            self._refresh_profile_combo()
+            try:
+                idx = self.profile_combo.findText(name)
+                if idx >= 0:
+                    self.profile_combo.setCurrentIndex(idx)
+            except Exception:
+                pass
+            self._log("[PROFILE] %s" % msg)
+            if not ok:
+                QtWidgets.QMessageBox.warning(self, "New Profile", msg)
+
+        def on_profile_delete(self):
+            if not _SKILLS_AVAILABLE:
+                return
+            name = str(self.profile_combo.currentText())
+            if name == skills_registry.PROFILE_ALL:
+                QtWidgets.QMessageBox.warning(
+                    self, "Delete Profile",
+                    "%r is built-in and cannot be deleted."
+                    % skills_registry.PROFILE_ALL)
+                return
+            answer = QtWidgets.QMessageBox.question(
+                self, "Delete Profile",
+                "Delete preset %r?" % name)
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            try:
+                ok, msg = skills_registry.delete_profile(name)
+            except Exception:
+                self._log("profile delete FAILED:\n%s"
+                          % traceback.format_exc())
+                return
+            self._refresh_skill_tree()
+            self._log("[PROFILE] %s" % msg)
+            if not ok:
+                QtWidgets.QMessageBox.warning(self, "Delete Profile", msg)
+
+        def on_select_all(self):
+            if not _SKILLS_AVAILABLE:
+                return
+            try:
+                ok, msg = skills_registry.set_all_enabled(True)
+            except Exception:
+                self._log("select all FAILED:\n%s" % traceback.format_exc())
+                return
+            self._refresh_skill_tree()
+            self._log("[PROFILE] %s" % msg)
+
+        def on_deselect_all(self):
+            if not _SKILLS_AVAILABLE:
+                return
+            try:
+                ok, msg = skills_registry.set_all_enabled(False)
+            except Exception:
+                self._log("deselect all FAILED:\n%s" % traceback.format_exc())
+                return
+            self._refresh_skill_tree()
+            self._log("[PROFILE] %s" % msg)
 
         # -- skill management (custom_skills/ + hot-reload) ---------------
         def _select_skill(self, name):
@@ -1516,8 +2062,111 @@ def _self_test():
     assert resp.get("status") == "error", resp
     print("PASS malformed-request error")
 
+    # 6. profiles: defaults exist, apply filters the advertised catalog.
+    prof_path = skills_registry.profiles_path()
+    prof_backup = None
+    if os.path.exists(prof_path):
+        with open(prof_path, "r", encoding="utf-8") as _f:
+            prof_backup = _f.read()
+    try:
+        assert skills_registry.get_active_profile() == "All Skills"
+        assert skills_registry.get_all_profiles() == [
+            "All Skills", "Floor Plan Shell", "Minimal / None"], \
+            skills_registry.get_all_profiles()
+        v0 = skills_registry.tools_version()
+        rep = skills_registry.apply_profile("Floor Plan Shell")
+        assert rep["ok"] and rep["total"] == 2, rep
+        assert sorted(rep["enabled"]) == [
+            "batch_modifier_applier", "scene_cleaner"], rep
+        assert rep["version"] == v0 + 1, rep
+        print("PASS profile apply: Floor Plan Shell (2 active)")
+
+        # 7. tools/list advertises only enabled skills.
+        resp = send({"id": uuid.uuid4().hex, "tools": "list"})
+        assert resp.get("status") == "ok", resp
+        assert resp["result"]["version"] == v0 + 1, resp
+        assert resp["result"]["active_profile"] == "Floor Plan Shell", resp
+        names = sorted(s["name"] for s in resp["result"]["skills"])
+        assert names == ["batch_modifier_applier", "scene_cleaner"], names
+        print("PASS tools/list: enabled-only catalog")
+
+        # 8. remote dispatch refuses disabled skills; local override works.
+        resp = send({"id": uuid.uuid4().hex,
+                     "skill": "camera_light_setup", "params": {}})
+        assert resp.get("status") == "error", resp
+        assert "disabled" in (resp.get("error") or ""), resp
+        print("PASS disabled skill refused over the wire")
+        direct = skills_registry.execute_skill(
+            "camera_light_setup", {}, enforce_enabled=False)
+        assert direct.get("ok") is True, direct
+        print("PASS explicit local override executes")
+
+        # 9. await_change: stale version answers at once; live version parks
+        # until the next catalog change, then wakes with the new catalog.
+        resp = send({"id": uuid.uuid4().hex, "tools": "await_change",
+                     "version": v0})
+        assert resp.get("status") == "ok", resp
+        assert resp["result"]["version"] == v0 + 1, resp
+        print("PASS await_change: stale version answers immediately")
+        box = {}
+        watch = threading.Thread(
+            target=lambda: box.update(resp=send(
+                {"id": uuid.uuid4().hex, "tools": "await_change",
+                 "version": v0 + 1})))
+        watch.daemon = True
+        watch.start()
+        deadline = time.time() + 5.0
+        while not server._watchers and time.time() < deadline:
+            time.sleep(0.02)
+        assert server._watchers, "watcher never parked"
+        rep = skills_registry.apply_profile("All Skills")
+        assert rep["ok"] and rep["total"] == 3, rep
+        watch.join(timeout=10.0)
+        assert not watch.is_alive(), "watcher never woke"
+        resp = box["resp"]
+        assert resp.get("status") == "ok", resp
+        assert resp.get("update") == "changed", resp
+        assert resp["result"]["version"] == v0 + 2, resp
+        assert len(resp["result"]["skills"]) == 3, resp
+        print("PASS await_change: parked watch wakes on profile switch")
+
+        # 10. profile CRUD guards.
+        ok, msg = skills_registry.delete_profile("All Skills")
+        assert not ok, msg
+        print("PASS All Skills deletion refused")
+        ok, msg = skills_registry.save_profile("All Skills", [])
+        assert not ok, msg
+        print("PASS All Skills overwrite refused")
+        ok, msg = skills_registry.save_profile(
+            "Test Preset", ["scene_cleaner", "nope"])
+        assert not ok and "nope" in msg, msg
+        print("PASS unknown skill names rejected on save")
+        ok, msg = skills_registry.save_profile(
+            "Test Preset", ["scene_cleaner"])
+        assert ok, msg
+        rep = skills_registry.apply_profile("Test Preset")
+        assert rep["ok"] and rep["enabled"] == ["scene_cleaner"], rep
+        ok, msg = skills_registry.delete_profile("Test Preset")
+        assert ok, msg
+        assert skills_registry.get_active_profile() == "All Skills", \
+            skills_registry.get_active_profile()
+        print("PASS profile save/apply/delete round-trip")
+    finally:
+        try:
+            if prof_backup is None:
+                if os.path.exists(prof_path):
+                    os.remove(prof_path)
+            else:
+                with open(prof_path, "w", encoding="utf-8") as _f:
+                    _f.write(prof_backup)
+        except Exception:
+            pass
+        skills_registry._PROFILES = None
+        skills_registry.apply_profile("All Skills")
+        skills_registry._TOOLS_VERSION[0] = 0
+
     assert server.active_clients == 0, server.active_clients
-    assert server.total_requests == 5, server.total_requests
+    assert server.total_requests == 9, server.total_requests
     server.stop()
     assert server.queue_depth == 0
     print("log lines: %d" % len(logs))

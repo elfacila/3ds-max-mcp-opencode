@@ -9,5 +9,9 @@ __pycache__/
 # Logs
 *.log
 
+# MaxMCP runtime state (per-machine, regenerated on load)
+profiles_config.json
+custom_skills/
+
 # Obsidian workspace cache (keep settings, drop cache)
 .vault-cache/

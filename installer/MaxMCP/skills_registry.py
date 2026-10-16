@@ -55,7 +55,7 @@ except Exception:
     rt = None
     _IN_MAX = False
 
-SKILLS_VERSION = "1.1.0"
+SKILLS_VERSION = "1.2.0"
 
 # name -> SkillSpec
 SKILL_REGISTRY = {}
@@ -65,6 +65,21 @@ SKILL_REGISTRY = {}
 CUSTOM_SKILLS_ENV = "MAXMCP_CUSTOM_SKILLS"
 # custom module name -> loaded .py path (builtin skills are not tracked here)
 _SKILL_MODULE_FILES = {}
+
+# Live enablement + profile state (see "Profiles & enablement" section).
+PROFILES_ENV = "MAXMCP_PROFILES"
+PROFILES_FILENAME = "profiles_config.json"
+PROFILE_ALL = "All Skills"
+PROFILE_SHELL = "Floor Plan Shell"
+PROFILE_MINIMAL = "Minimal / None"
+# Categories composing the default "Floor Plan Shell" profile
+# (modeling + spline cleanup; camera/lighting excluded).
+SHELL_CATEGORIES = ("Scene Management", "Geometry & Modifiers")
+_ENABLED = set()          # live enabled skill names; default = everything
+_PROFILES = None          # lazy {"active_profile": str, "profiles": {...}}
+_PROFILES_ERROR = None    # last profiles-file problem (surfaced in UI)
+_TOOLS_VERSION = [0]      # bumped on every advertised-catalog change
+_TOOLS_CHANGED_CBS = []   # fn(version, enabled_count); never raises out
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +184,7 @@ class SkillSpec(object):
             "description": self.description,
             "params": [dict(p) for p in self.params],
             "source": self.source,
+            "enabled": self.name in _ENABLED,
         }
 
     def __repr__(self):
@@ -227,18 +243,25 @@ def register_skill(name, category="General", description="", params=None,
     return _decorator
 
 
-def list_skills():
+def list_skills(enabled_only=False):
     """Return skill metadata dicts sorted by (category, name)."""
-    return [SKILL_REGISTRY[k].to_dict()
-            for k in sorted(SKILL_REGISTRY,
-                            key=lambda n: (SKILL_REGISTRY[n].category,
-                                           SKILL_REGISTRY[n].name))]
+    names = sorted(SKILL_REGISTRY,
+                   key=lambda n: (SKILL_REGISTRY[n].category,
+                                  SKILL_REGISTRY[n].name))
+    if enabled_only:
+        names = [n for n in names if n in _ENABLED]
+    return [SKILL_REGISTRY[k].to_dict() for k in names]
 
 
-def skills_by_category():
+def list_enabled_skills():
+    """Return metadata dicts for currently enabled skills only."""
+    return list_skills(enabled_only=True)
+
+
+def skills_by_category(enabled_only=False):
     """Return {category: [skill_dict, ...]} with skills sorted by name."""
     grouped = {}
-    for skill in list_skills():
+    for skill in list_skills(enabled_only=enabled_only):
         grouped.setdefault(skill["category"], []).append(skill)
     return grouped
 
@@ -248,12 +271,18 @@ def get_skill(name):
     return SKILL_REGISTRY.get(name)
 
 
-def execute_skill(name, params=None):
+def execute_skill(name, params=None, enforce_enabled=True):
     """Run a skill by name with a params dict. Dual entry point.
 
     Called directly from the UI thread AND from MCP-dispatched code
     running in the main 3ds Max thread.  Always returns a JSON-safe dict.
     Never raises: failures are returned as {"ok": False, "error": ...}.
+
+    With enforce_enabled=True (default: every remote/MCP path), skills
+    disabled by the active profile are refused with a clear error so the
+    advertised catalog and dispatch can never disagree.  The UI passes
+    enforce_enabled=False for an explicit local click, but logs the
+    override (see max_mcp_ui.on_execute_locally).
     """
     try:
         spec = SKILL_REGISTRY.get(name)
@@ -262,6 +291,12 @@ def execute_skill(name, params=None):
                     "skill": name,
                     "error": "Unknown skill %r. Available: %s"
                              % (name, sorted(SKILL_REGISTRY))}
+        if enforce_enabled and name not in _ENABLED:
+            return {"ok": False,
+                    "skill": name,
+                    "error": "Skill %r is disabled by the active profile "
+                             "%r. Enable it in the Skill Manager." % (
+                                 name, get_active_profile())}
         coerced = validate_params(name, params or {})
     except Exception as exc:
         return {"ok": False, "skill": name,
@@ -309,6 +344,344 @@ def build_skill_code(name, params=None):
         % (name, payload, name)
     )
     return code
+
+
+# ---------------------------------------------------------------------------
+# Profiles & enablement: which skills the MCP catalog advertises.
+#
+# File: <module>/profiles_config.json (== #userScripts/MaxMCP/ when
+# installed; MAXMCP_PROFILES env override for tests), shape:
+#   {"active_profile": str, "profiles": {name: [skill, ...] | None}}
+# A None list means "dynamic all" (used only by "All Skills", which can
+# neither be overwritten nor deleted).  Live checkbox toggles update
+# _ENABLED (and the tools version) immediately but persist only when the
+# profile is saved — see max_mcp_ui.
+# ---------------------------------------------------------------------------
+def profiles_path():
+    """Return the profiles JSON path (override via MAXMCP_PROFILES)."""
+    override = os.environ.get(PROFILES_ENV)
+    if override:
+        return os.path.abspath(override)
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        here = os.getcwd()
+    return os.path.join(here, PROFILES_FILENAME)
+
+
+def tools_version():
+    """Advertised-catalog version; bumped on every enablement change."""
+    return int(_TOOLS_VERSION[0])
+
+
+def on_tools_changed(fn):
+    """Register fn(version, enabled_count) for catalog changes.
+
+    Callbacks run synchronously on the mutating thread (the main thread
+    for every UI/socket path) and never propagate exceptions.
+    """
+    if callable(fn) and fn not in _TOOLS_CHANGED_CBS:
+        _TOOLS_CHANGED_CBS.append(fn)
+    return fn
+
+
+def _bump_tools_version(reason=""):
+    _TOOLS_VERSION[0] = int(_TOOLS_VERSION[0]) + 1
+    version = int(_TOOLS_VERSION[0])
+    try:
+        count = len(_ENABLED)
+    except Exception:
+        count = 0
+    for callback in list(_TOOLS_CHANGED_CBS):
+        try:
+            callback(version, count)
+        except Exception:
+            pass
+    return version
+
+
+def _default_shell_skills():
+    """Default 'Floor Plan Shell' members: modeling + cleanup categories."""
+    return sorted(n for n, spec in SKILL_REGISTRY.items()
+                  if spec.category in SHELL_CATEGORIES)
+
+
+def _default_profiles():
+    return {
+        PROFILE_ALL: None,
+        PROFILE_SHELL: _default_shell_skills(),
+        PROFILE_MINIMAL: [],
+    }
+
+
+def _read_profiles_file(path):
+    """Return (active, profiles) or (None, error). Never raises."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except IOError:
+        return (None, "missing")
+    except Exception as exc:
+        try:
+            backup = path + ".corrupt-%s" % os.getpid()
+            try:
+                os.replace(path, backup)
+            except Exception:
+                backup = None
+            detail = "corrupt JSON (%s); defaults restored%s" % (
+                exc, ("; bad copy kept at %s" % backup) if backup else "")
+        except Exception:
+            detail = "unreadable (%s); defaults restored" % exc
+        return (None, detail)
+    try:
+        if not isinstance(data, dict):
+            return (None, "root must be an object; defaults restored")
+        profiles = data.get("profiles")
+        if not isinstance(profiles, dict) or PROFILE_ALL not in profiles:
+            return (None, "missing profiles table; defaults restored")
+        clean = {PROFILE_ALL: None}
+        for name, members in profiles.items():
+            if name == PROFILE_ALL or not isinstance(name, str) or not name:
+                continue
+            if not isinstance(members, list):
+                continue
+            clean[name] = [str(m) for m in members]
+        active = data.get("active_profile")
+        if active not in clean:
+            active = PROFILE_ALL
+        return ({"active_profile": active, "profiles": clean}, "")
+    except Exception as exc:
+        return (None, "invalid schema (%s); defaults restored" % exc)
+
+
+def _write_profiles_file(path, active, profiles):
+    """Atomic write. Returns (ok, error). Never raises."""
+    try:
+        parent = os.path.dirname(path)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
+        tmp = path + ".tmp-%s" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump({"active_profile": active, "profiles": profiles},
+                      handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp, path)
+        return (True, "")
+    except Exception as exc:
+        return (False, "%s" % exc)
+
+
+def _ensure_profiles_loaded():
+    """Load (or create) the profiles file into _PROFILES. Never raises."""
+    global _PROFILES, _PROFILES_ERROR
+    if _PROFILES is not None:
+        return _PROFILES
+    path = profiles_path()
+    loaded, err = _read_profiles_file(path)
+    if loaded is None:
+        if err != "missing":
+            _PROFILES_ERROR = err
+        loaded = {"active_profile": PROFILE_ALL,
+                  "profiles": _default_profiles()}
+        ok, werr = _write_profiles_file(path, loaded["active_profile"],
+                                        loaded["profiles"])
+        if not ok:
+            _PROFILES_ERROR = werr
+    for name in _default_profiles():
+        loaded["profiles"].setdefault(
+            name, _default_profiles()[name])
+    loaded["profiles"][PROFILE_ALL] = None
+    _PROFILES = loaded
+    return _PROFILES
+
+
+def get_all_profiles():
+    """Return profile names with 'All Skills' first, rest sorted."""
+    state = _ensure_profiles_loaded()
+    others = sorted(n for n in state["profiles"] if n != PROFILE_ALL)
+    return [PROFILE_ALL] + others
+
+
+def get_active_profile():
+    """Return the active profile name."""
+    return _ensure_profiles_loaded()["active_profile"]
+
+
+def is_skill_enabled(name):
+    """Return True when *name* is advertised to MCP clients."""
+    return name in _ENABLED
+
+
+def set_skill_enabled(name, enabled):
+    """Toggle one skill live (persists on profile save).
+
+    Bumps the tools version and notifies listeners on real changes.
+    Returns (ok, message). Never raises.
+    """
+    try:
+        if name not in SKILL_REGISTRY:
+            return (False, "Unknown skill %r." % (name,))
+        enabled = bool(enabled)
+        before = set(_ENABLED)
+        if enabled:
+            _ENABLED.add(name)
+        else:
+            _ENABLED.discard(name)
+        if set(_ENABLED) != before:
+            _bump_tools_version("toggle %s" % name)
+            state = "enabled" if enabled else "disabled"
+            return (True, "Skill %r %s (%d active)."
+                    % (name, state, len(_ENABLED)))
+        return (True, "Skill %r already %s." % (
+            name, "enabled" if enabled else "disabled"))
+    except Exception as exc:
+        return (False, "%s" % exc)
+
+
+def set_all_enabled(enabled):
+    """Enable/disable every registered skill live. Returns (ok, message)."""
+    try:
+        before = set(_ENABLED)
+        if enabled:
+            _ENABLED.update(SKILL_REGISTRY)
+        else:
+            _ENABLED.clear()
+        if set(_ENABLED) != before:
+            _bump_tools_version("all %s" % ("on" if enabled else "off"))
+        return (True, "%d skills %s." % (
+            len(_ENABLED), "enabled" if enabled else "disabled"))
+    except Exception as exc:
+        return (False, "%s" % exc)
+
+
+def save_profile(profile_name, enabled_skills):
+    """Persist *enabled_skills* under *profile_name*. Returns (ok, msg)."""
+    try:
+        if not profile_name or not isinstance(profile_name, str):
+            return (False, "Profile name must be a non-empty string.")
+        if profile_name == PROFILE_ALL:
+            return (False, "%r is dynamic (always all skills) and cannot "
+                           "be overwritten." % PROFILE_ALL)
+        if not isinstance(enabled_skills, (list, tuple)):
+            return (False, "enabled_skills must be a list of skill names.")
+        unknown = [s for s in enabled_skills
+                   if s not in SKILL_REGISTRY]
+        if unknown:
+            return (False, "Unknown skills: %s." % sorted(unknown))
+        state = _ensure_profiles_loaded()
+        state["profiles"][profile_name] = [str(s) for s in enabled_skills]
+        ok, err = _write_profiles_file(profiles_path(),
+                                       state["active_profile"],
+                                       state["profiles"])
+        if not ok:
+            return (False, "Write failed: %s" % err)
+        return (True, "Profile %r saved (%d skills)."
+                % (profile_name, len(state["profiles"][profile_name])))
+    except Exception as exc:
+        return (False, "%s" % exc)
+
+
+def load_profile(profile_name):
+    """Read one stored profile. Returns (ok, {...} or error string)."""
+    try:
+        state = _ensure_profiles_loaded()
+        if profile_name not in state["profiles"]:
+            return (False, "Unknown profile %r. Available: %s"
+                    % (profile_name, get_all_profiles()))
+        members = state["profiles"][profile_name]
+        if members is None:
+            members = sorted(SKILL_REGISTRY)
+        return (True, {"name": profile_name, "skills": list(members)})
+    except Exception as exc:
+        return (False, "%s" % exc)
+
+
+def delete_profile(profile_name):
+    """Delete a stored profile. Returns (ok, message). Never raises."""
+    try:
+        if profile_name == PROFILE_ALL:
+            return (False, "%r cannot be deleted." % PROFILE_ALL)
+        state = _ensure_profiles_loaded()
+        if profile_name not in state["profiles"]:
+            return (False, "Unknown profile %r." % (profile_name,))
+        del state["profiles"][profile_name]
+        if state["active_profile"] == profile_name:
+            state["active_profile"] = PROFILE_ALL
+            _ENABLED.update(SKILL_REGISTRY)
+            _bump_tools_version("delete active %s" % profile_name)
+        ok, err = _write_profiles_file(profiles_path(),
+                                       state["active_profile"],
+                                       state["profiles"])
+        if not ok:
+            return (False, "Write failed: %s" % err)
+        return (True, "Profile %r deleted." % (profile_name,))
+    except Exception as exc:
+        return (False, "%s" % exc)
+
+
+def apply_profile(profile_name):
+    """Enable exactly *profile_name*'s skills, persist it active.
+
+    Unknown stored names are dropped (reported).  Returns a report dict:
+    {"ok", "profile", "enabled", "dropped", "total", "version"}.
+    Never raises.
+    """
+    try:
+        state = _ensure_profiles_loaded()
+        if profile_name not in state["profiles"]:
+            return {"ok": False, "profile": profile_name,
+                    "error": "Unknown profile %r. Available: %s"
+                             % (profile_name, get_all_profiles()),
+                    "enabled": [], "dropped": [],
+                    "total": len(_ENABLED),
+                    "version": tools_version()}
+        members = state["profiles"][profile_name]
+        if members is None:
+            wanted = set(SKILL_REGISTRY)
+            dropped = []
+        else:
+            wanted = set(m for m in members if m in SKILL_REGISTRY)
+            dropped = sorted(set(members) - wanted)
+        before = set(_ENABLED)
+        _ENABLED.clear()
+        _ENABLED.update(wanted)
+        version = tools_version()
+        if set(_ENABLED) != before:
+            version = _bump_tools_version("apply %s" % profile_name)
+        state["active_profile"] = profile_name
+        ok, err = _write_profiles_file(profiles_path(),
+                                       state["active_profile"],
+                                       state["profiles"])
+        report = {"ok": True, "profile": profile_name,
+                  "enabled": sorted(_ENABLED), "dropped": dropped,
+                  "total": len(_ENABLED), "version": version}
+        if not ok:
+            report["persist_warning"] = err
+        return report
+    except Exception:
+        return {"ok": False, "profile": profile_name,
+                "error": traceback.format_exc(limit=3),
+                "enabled": [], "dropped": [],
+                "total": len(_ENABLED), "version": tools_version()}
+
+
+def _init_profiles():
+    """First-run setup: ensure file exists, apply stored active profile."""
+    global _PROFILES_ERROR
+    state = _ensure_profiles_loaded()
+    if _PROFILES_ERROR:
+        pass  # surfaced via get_profiles_error(); keep going with defaults
+    report = apply_profile(state["active_profile"])
+    if not report.get("ok"):
+        apply_profile(PROFILE_ALL)
+    # Fresh start: the initial enablement is the baseline, not a change.
+    _TOOLS_VERSION[0] = 0
+
+
+def get_profiles_error():
+    """Return the last profiles-file problem, or None."""
+    _ensure_profiles_loaded()
+    return _PROFILES_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +877,8 @@ def _remove_module_skills(modname):
                 removed.append(name)
         except Exception:
             pass
+    for name in removed:
+        _ENABLED.discard(name)
     _SKILL_MODULE_FILES.pop(modname, None)
     try:
         sys.modules.pop(modname, None)
@@ -543,6 +918,7 @@ def reload_skills():
         report.update(ok=False, errors={"<listdir>": "%s" % exc})
         return report
     wanted = set()
+    catalog_before = (sorted(SKILL_REGISTRY), sorted(_ENABLED))
     for fname in files:
         fpath = os.path.join(path, fname)
         modname = _module_name_for(os.path.splitext(fname)[0])
@@ -572,6 +948,16 @@ def reload_skills():
             continue
         _SKILL_MODULE_FILES[modname] = fpath
         added = sorted(set(SKILL_REGISTRY) - before)
+        # New skills join the live set only under "All Skills"; any other
+        # active profile is explicit, so newcomers stay off until saved in.
+        try:
+            if get_active_profile() == PROFILE_ALL:
+                _ENABLED.update(added)
+            else:
+                for _n in added:
+                    _ENABLED.discard(_n)
+        except Exception:
+            _ENABLED.update(added)
         if added:
             report["loaded"].extend("%s (%s)" % (n, fname) for n in added)
         else:
@@ -579,6 +965,8 @@ def reload_skills():
     for modname in [m for m in list(_SKILL_MODULE_FILES)
                     if m not in wanted]:
         report["removed"].extend(_remove_module_skills(modname))
+    if (sorted(SKILL_REGISTRY), sorted(_ENABLED)) != catalog_before:
+        _bump_tools_version("reload")
     report["total"] = len(SKILL_REGISTRY)
     report["ok"] = not report["errors"]
     return report
@@ -931,3 +1319,10 @@ except Exception as exc:  # reload_skills guards itself; last-resort net
     AUTOLOAD_REPORT = {"ok": False, "dir": "", "loaded": [], "removed": [],
                        "errors": {"<autoload>": "%s" % exc},
                        "total": len(SKILL_REGISTRY)}
+
+# Profiles init runs after the skill set is complete (builtins + autoload)
+# so defaults and stored lists validate against real skill names.
+try:
+    _init_profiles()
+except Exception as exc:  # _init_profiles guards itself; last-resort net
+    _PROFILES_ERROR = "%s" % exc
