@@ -2,7 +2,11 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
-## 2026-10-16 — Macro lost after reboot: .ms → .mcr (installer v1.2.5)
+## 2026-10-16 — GC crash fix (installer v1.2.6, response to garbage-collection dialog)
+
+- **Symptom**: "MAXScript Garbage Collection Error" modal over the v1.2.5 success dialog.
+- **Cause**: the explicit `gc light:true` I added after `FClose` — forcing a collection with BinStream handles in flight. Removed by design (FClose suffices); handle audit of the whole copy chain (every `fopen` paired on all paths); shell-copy existence check polled 2 s; diagnose receipt-read now closes on all paths (same leak class).
+- **If it persists**: next suspect is the bar create/destroy cycle; fallback is create-without-teardown.
 
 - **Symptom**: bar survived reboot (v1.2.4 fallback worked) but clicking it said "macro not found" — while the file sat present in userMacros.
 - **Root cause**: Max auto-loads `*.mcr` from userMacros at startup but ignores `*.ms` there. The launcher shipped with the wrong extension, so it registered live (via installer `fileIn`) and never again.

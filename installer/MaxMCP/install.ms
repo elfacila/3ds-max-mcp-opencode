@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.5)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.6)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -24,7 +24,7 @@
         point, and cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.2.5"
+global MaxMCP_version = "1.2.6"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
@@ -140,7 +140,10 @@ fn MaxMCP_streamCopy src dst =
     catch ()
     try (if (fout != undefined) do (FClose fout)) catch ()
     try (if (fin != undefined) do (FClose fin)) catch ()
-    try (gc light:true) catch ()
+    -- NOTE: no explicit gc() here by design. A forced collection while
+    -- BinStream handles are in flight crashed the collector on user
+    -- machines ("MAXScript Garbage Collection Error"). FClose above is
+    -- sufficient; Max collects the dead streams on its own schedule.
     if (ok and not (doesFileExist dst)) do (ok = false)
     if (not ok) do (try (deleteFile dst) catch ())
     ok
@@ -178,13 +181,20 @@ fn MaxMCP_copyOne src dst =
     )
     if (detail == "" and (doesFileExist dst)) do (return true)
     -- Child-process copy: runs outside Max's process, dodging any hook that
-    -- intercepts 3dsmax.exe's own file writes. Hidden window, verified by
-    -- existence afterwards (exit code ignored).
+    -- intercepts 3dsmax.exe's own file writes. Verified by existence
+    -- afterwards (exit code ignored); polled briefly in case the shell is
+    -- slow to flush on tired disks.
     try
     (
         hiddenDosCommand ("cmd /c copy /y \"" + src + "\" \"" + dst + "\"")
     )
     catch ()
+    local waited = 0
+    while ((not (doesFileExist dst)) and (waited < 20)) do
+    (
+        sleep 0.1
+        waited += 1
+    )
     if (doesFileExist dst) do
     (
         print ("[MaxMCP] copied via shell: " + dst)

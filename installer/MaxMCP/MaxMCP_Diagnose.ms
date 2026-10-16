@@ -33,13 +33,15 @@
     print ("install receipt:   " + ((doesFileExist receipt) as string) + " " + receipt)
     if (doesFileExist receipt) do
     (
+        -- Handle closed on every path: a leaked handle plus a later
+        -- collection is exactly the "MAXScript Garbage Collection Error".
         try
         (
             local fs = openFile receipt mode:"r"
             if (fs != undefined) do
             (
-                print ("receipt says: " + (readLine fs))
-                close fs
+                try (print ("receipt says: " + (readLine fs))) catch ()
+                try (close fs) catch ()
             )
         )
         catch ()
