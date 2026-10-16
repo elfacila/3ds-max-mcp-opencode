@@ -2,6 +2,13 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
+## 2026-10-16 — Profiles + live MCP catalog sync (v1.2.0)
+
+- **Profile system** (`skills_registry.py`): `profiles_config.json` (atomic writes, corrupt → backup + defaults), `save/load/delete/get_all/apply_profile`, All Skills dynamic + protected, Floor Plan Shell (modeling + cleanup) / Minimal defaults. Live `_ENABLED` set; `execute_skill` enforces remotely, UI overrides explicitly. `tools_version` + guarded callbacks.
+- **Checkbox tree + profile bar** (`max_mcp_ui.py`): tri-state categories, `● ON/OFF/RUN` badges, instant apply with `[PROFILE]` log lines, Select/Deselect All.
+- **Catalog sync**: `tools/list` (enabled-only) + `await_change` long-poll (stale answers at once, live parks until change, released on stop). Self-test 15/15; edge suite 18/18.
+- **Fix**: skill tree width cap removed → draggable `QSplitter`, wider default panel (full names visible).
+
 ## 2026-10-16 — Installer failure fix + compact button
 
 - **Symptom** (from user's Listener screenshot): every `copyFile` in `install.ms` failed, yet the installer printed "installed" and built a button bar pointing at a never-installed macro ("macro not found" popup); menu setup threw "Unknown system exception".

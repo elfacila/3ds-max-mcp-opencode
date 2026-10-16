@@ -15,6 +15,10 @@ OpenCode ──MCP skill dispatch──▶ [[GUI-Plugin|McpBridgeServer]] (daemo
 [[GUI-Plugin|MaxMcpWindow]] ──Add/Import/Edit/Reload──▶ custom_skills/*.py ──reload_skills()──▶ [[Skills-Registry|SKILL_REGISTRY]]
         │                                                                              │
         └─ Execute Locally ──▶ execute_skill() ◀── remote dispatch ─────────────────────┘
+        │
+        ├─ checkboxes/profile bar ──▶ enablement + profiles_config.json ──▶ [[Skills-Registry|tools_version]]
+        │                                                                     │
+MCP host ──tools/list + await_change──▶ enabled-only catalog ◀────────────────┘
 ```
 
 ## Node catalogue
@@ -28,13 +32,15 @@ OpenCode ──MCP skill dispatch──▶ [[GUI-Plugin|McpBridgeServer]] (daemo
 | Skill store | [[Skills-Registry]] | registry + autoload + reload | [[GUI-Plugin]], [[Data-Structures]] |
 | Custom skills | `custom_skills/*.py` | user skills, hot-reloadable | [[Skills-Registry]], [[GUI-Plugin]] |
 | Installer | [[Installer]] | MZP, macro, toolbar, icons | [[GUI-Plugin]], [[Install-Guide]] |
-| Wire format | [[Protocol]] | envelopes for code/skill | [[Data-Structures]], [[Bridge-Legacy]] |
+| Wire format | [[Protocol]] | envelopes for code/skill/catalog | [[Data-Structures]], [[Bridge-Legacy]] |
+| Profiles | `profiles_config.json` | enabled set + named presets | [[Skills-Registry]], [[GUI-Plugin]], [[Protocol]] |
 
 ## Data-flow edges (for graph reading)
 
-- [[GUI-Plugin]] → [[Skills-Registry]] (imports, calls `execute_skill`, `reload_skills`)
+- [[GUI-Plugin]] → [[Skills-Registry]] (imports, calls `execute_skill`, `reload_skills`, profile API)
 - [[Skills-Registry]] → custom skills (imports `custom_skills/*.py` at load + reload)
 - [[Installer]] → [[GUI-Plugin]] (deploys `max_mcp_ui.py`, launches via `toggle_mcp_ui`)
 - [[Protocol]] → [[GUI-Plugin]] + [[Bridge-Legacy]] (both speak the same envelopes)
+- Profiles → [[Protocol]] (enablement filters `tools/list`; version bumps wake `await_change`)
 - [[Data-Structures]] describes the payloads on every edge above
 - [[Dev-Log]] records when each edge was built; [[Install-Guide]] is the deploy path

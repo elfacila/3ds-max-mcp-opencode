@@ -21,17 +21,32 @@ SkillSpec(
 
 - Store: `SKILL_REGISTRY: {name -> SkillSpec}`. Remote dispatch reads it **live**, so reloads need no restart — see [[Skills-Registry]].
 - `node` params travel as **name strings**, resolved inside the skill body.
+- `to_dict()` carries `"enabled"` + `"source"` alongside the schema.
+
+## Profiles (`profiles_config.json`)
+
+```json
+{"active_profile": "Floor Plan Shell",
+ "profiles": {"All Skills": null,
+              "Floor Plan Shell": ["batch_modifier_applier", "scene_cleaner"],
+              "Minimal / None": []}}
+```
+
+- `null` = dynamic-all (only "All Skills"; cannot be overwritten or deleted).
+- Live `_ENABLED` set drives dispatch + catalog; file persists on save/apply.
+- `tools_version` int bumps on every real catalog change; `on_tools_changed` callbacks never raise.
 
 ## McpBridgeServer (`max_mcp_ui.py`)
 
 - State: `running`, `active_clients` (lock-guarded), `total_requests`, `queue_depth`.
 - Queue items: `(request_dict, holder)` where `holder = {"event": threading.Event, "response": dict}`.
+- Parked watchers: `[(holder, req_id)]` for `await_change` long-polls, answered on catalog change, released on `stop()`.
 - Threads: daemon accept thread = network only; `QTimer` (300 ms) `pump_once()` on the main thread = all `pymxs`/`exec`. See [[GUI-Plugin]].
 
 ## Protocol envelopes (see [[Protocol]])
 
-- Requests: `{"id", "code"}` (legacy) or `{"id", "skill"|"tool", "params"|"arguments"|"args"}`.
-- Responses: `{"id", "status": "ok"|"error", "output", "result", "error", "version"}`.
+- Requests: `{"id", "code"}` (legacy), `{"id", "skill"|"tool", ...}`, or `{"id", "tools": "list"|"await_change"}`.
+- Responses: `{"id", "status": "ok"|"error", "output", "result", "error", "version"}` (+ `tools_version` on catalog answers).
 
 ## reload_skills() report
 
