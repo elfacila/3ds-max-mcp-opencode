@@ -1,0 +1,9 @@
+-- MaxMCP_Plugin.mzp control file.
+-- NOTE: mzp.run is NOT freeform MAXScript. The MZP protocol only
+-- recognizes copy/move/drop/run/open/import/merge/xref commands here
+-- (anything else fails with "Unrecognized run command"). All install
+-- logic lives in install.ms, which auto-runs on fileIn.
+--   Drag-drop into a viewport -> the 'drop' line below fileIns install.ms.
+--   Scripting > Run Script (.mzp) -> the 'run' line below fileIns install.ms.
+run "install.ms"
+drop "install.ms"
