@@ -2,7 +2,10 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
-## 2026-10-16 — Reboot persistence fix (installer v1.2.1)
+## 2026-10-16 — "Gone after reboot" diagnosis (installer v1.2.1+)
+
+- **Symptom**: panel ran fine in-session (v1.2.0 tree screenshot) but nothing survived restart — no icon, no files. Since Max auto-loads anything present in userMacros/Startup, absence ⟹ files were never durably written (the earlier all-copies-failed run), possibly combined with elevated-vs-user profile mismatch.
+- **Fix**: pre-flight writability probe per destination folder (`MaxMCP_probeDir`: .NET write + MAXScript fallback, probe file cleaned up) with abort naming AV / Controlled Folder Access / elevation mismatch; manual Explorer-copy fallback documented. Reboot check + `MaxMCP_showBar()` recovery from the previous entry still apply once files stick.
 
 - **Symptom**: MCP button gone after Max restart. Root cause chain: the earlier all-copies-failed run left no macro/toolbar files behind, so no session could auto-load anything — and the startup script ran silently, leaving zero trace.
 - **Fix**: `MaxMCP_Toolbar.ms` restructured around `MaxMCP_showBar()` (manual recovery from the Listener at any time) with a printed line per step; install proves macro registration via lookup-only `createActionItem` (no UI side effects) and prints a post-flight reboot check (`macro file / startup-bar file / payload / macro live`); summary dialog shows registration + reboot-file status.

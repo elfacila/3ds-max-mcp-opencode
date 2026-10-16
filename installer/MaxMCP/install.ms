@@ -59,6 +59,58 @@ fn MaxMCP_ensureDir dir =
 )
 
 
+fn MaxMCP_probeDir dir label =
+(
+    -- Pre-flight writability test. Returns true when Max can write here.
+    -- Prints the exact OS verdict; a failure here explains every later
+    -- "copy FAILED" and "gone after reboot" symptom.
+    if (not (MaxMCP_ensureDir dir)) do
+    (
+        print ("[MaxMCP] NOT WRITABLE (no dir): " + label + " (" + dir + ")")
+        return false
+    )
+    local probe = dir + "/MaxMCP_write_test.tmp"
+    local ok = false
+    local detail = ""
+    try
+    (
+        (dotNetClass "System.IO.File").WriteAllText probe "probe"
+        ok = doesFileExist probe
+    )
+    catch
+    (
+        detail = (getCurrentException())
+    )
+    if (not ok and detail == "") do
+    (
+        -- No .NET verdict: try plain MAXScript file I/O instead.
+        try
+        (
+            local fs = createFile probe
+            if (fs != undefined) do
+            (
+                close fs
+                ok = true
+            )
+        )
+        catch
+        (
+            detail = (getCurrentException())
+        )
+    )
+    try (deleteFile probe) catch ()
+    if (ok) then
+    (
+        print ("[MaxMCP] writable: " + label)
+    )
+    else
+    (
+        print ("[MaxMCP] NOT WRITABLE: " + label + " (" + dir + ") " + detail)
+    )
+    ok
+)
+
+
 fn MaxMCP_copyOne src dst =
 (
     if (not (doesFileExist src)) do
@@ -212,6 +264,27 @@ fn MaxMCP_install =
     print ("[MaxMCP] src:    " + srcDir)
     print ("[MaxMCP] dst:    " + dstDir)
     print ("[MaxMCP] macros: " + macroDir)
+    -- Pre-flight: if Max cannot write these folders, nothing installed
+    -- today can survive a reboot. Abort with the OS reason, not silence.
+    local wD = MaxMCP_probeDir dstDir "plugin dir"
+    local wM = MaxMCP_probeDir macroDir "userMacros"
+    local wI = MaxMCP_probeDir iconsDir "userIcons"
+    local wS = MaxMCP_probeDir startupDir "startupScripts"
+    if ((not wD) or (not wM)) do
+    (
+        local nowrite = "MaxMCP install ABORTED: 3ds Max cannot write to its own folders.\n\nSee the Listener lines above for which folder and the OS reason.\nUsual causes:\n- Antivirus quarantining/blocking 3dsmax.exe file writes\n- Windows Controlled Folder Access (allow 3dsmax.exe)\n- Max running as a different user / elevated (files would land in another profile)\n\nFix access, then drop the .mzp again. Manual fallback: copy the files with Windows Explorer (it will show the blocker directly)."
+        print ("[MaxMCP] " + nowrite)
+        messageBox nowrite title:"MaxMCP install failed"
+        return false
+    )
+    if (not wS) do
+    (
+        print "[MaxMCP] WARNING: startupScripts not writable; the button bar cannot auto-return after reboot (macro + menu still work)."
+    )
+    if (not wI) do
+    (
+        print "[MaxMCP] WARNING: userIcons not writable; continuing without custom icons."
+    )
     if (not (MaxMCP_ensureDir dstDir)) do
     (
         local dirFail = "MaxMCP install ABORTED.\n\nCannot create folder:\n" + dstDir + \
