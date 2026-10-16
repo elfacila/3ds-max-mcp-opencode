@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.4)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.5)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -24,7 +24,7 @@
         point, and cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.2.4"
+global MaxMCP_version = "1.2.5"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
@@ -365,11 +365,15 @@ fn MaxMCP_install =
     )
 
     -- 2. MacroScript into userMacros + live registration for this session.
-    local macroOK = MaxMCP_copyOne (srcDir + "MCP_MacroScript.ms") (macroDir + "MaxMCP_Launcher.ms")
+    -- NOTE: the installed file MUST end in .mcr — Max auto-loads *.mcr from
+    -- userMacros at every startup but ignores *.ms there (that is why the
+    -- button lost its macro after reboot). Remove any stale .ms copy.
+    try (deleteFile (macroDir + "MaxMCP_Launcher.ms")) catch ()
+    local macroOK = MaxMCP_copyOne (srcDir + "MCP_MacroScript.ms") (macroDir + "MaxMCP_Launcher.mcr")
     local macroLive = false
     if (macroOK) do
     (
-        try (fileIn (macroDir + "MaxMCP_Launcher.ms")) catch
+        try (fileIn (macroDir + "MaxMCP_Launcher.mcr")) catch
         (
             print "[MaxMCP] WARNING: macro installed but live registration failed; restart Max."
         )
@@ -425,7 +429,7 @@ fn MaxMCP_install =
         local stamp = try ((localTime) as string) catch ("unknown time")
         local receipt = "MaxMCP " + MaxMCP_version + " installed " + stamp + "\n" + \
             "payload: " + dstDir + "\n" + \
-            "macro:   " + macroDir + "MaxMCP_Launcher.ms\n" + \
+            "macro:   " + macroDir + "MaxMCP_Launcher.mcr\n" + \
             "bar:     " + barDst + "\n"
         (dotNetClass "System.IO.File").WriteAllText (dstDir + "install_receipt.txt") receipt
         receiptOK = doesFileExist (dstDir + "install_receipt.txt")
@@ -437,7 +441,7 @@ fn MaxMCP_install =
     -- the payload/macro behind it only produces "macro not found" popups.
     if ((not payloadOK) or (not macroOK)) do
     (
-        local fail = "MaxMCP install ABORTED.\n\nFile copy failed through copyFile, .NET, shell AND byte-stream paths (the Listener shows the OS reason per file).\nNothing was registered.\n\nThe OS is refusing writes to Max's folders for every API. Manual fallback (do this once in Explorer):\n1. Create <userScripts>/MaxMCP/ and copy max_mcp_ui.py + skills_registry.py into it\n2. Copy MCP_MacroScript.ms to <userMacros>/MaxMCP_Launcher.ms\n3. Copy the two .bmp files to <userIcons>/\n4. Copy MaxMCP_Toolbar.ms to <startupScripts>/\n5. Restart Max."
+        local fail = "MaxMCP install ABORTED.\n\nFile copy failed through copyFile, .NET, shell AND byte-stream paths (the Listener shows the OS reason per file).\nNothing was registered.\n\nThe OS is refusing writes to Max's folders for every API. Manual fallback (do this once in Explorer):\n1. Create <userScripts>/MaxMCP/ and copy max_mcp_ui.py + skills_registry.py into it\n2. Copy MCP_MacroScript.ms to <userMacros>/MaxMCP_Launcher.mcr\n3. Copy the two .bmp files to <userIcons>/\n4. Copy MaxMCP_Toolbar.ms to <startupScripts>/\n5. Restart Max."
         print ("[MaxMCP] " + fail)
         messageBox fail title:"MaxMCP install failed"
         return false
@@ -461,7 +465,7 @@ fn MaxMCP_install =
 
     -- 8. Post-flight persistence check: these three files are what the next
     -- Max session auto-loads. If any is missing, say so now (not next week).
-    local persistMacro = doesFileExist (macroDir + "MaxMCP_Launcher.ms")
+    local persistMacro = doesFileExist (macroDir + "MaxMCP_Launcher.mcr")
     local persistBar = (barOK and (doesFileExist barDst))
     local persistPy = doesFileExist (dstDir + "max_mcp_ui.py")
     print ("[MaxMCP] reboot check: macro file=" + (persistMacro as string) + \
@@ -506,6 +510,7 @@ fn MaxMCP_uninstall =
         try (deleteFile (dstDir + f)) catch ()
     )
     try (deleteFile (dstDir + "install_receipt.txt")) catch ()
+    try (deleteFile ((getDir #userMacros) + "/MaxMCP_Launcher.mcr")) catch ()
     try (deleteFile ((getDir #userMacros) + "/MaxMCP_Launcher.ms")) catch ()
     -- Bar may live in either Startup folder (system needs elevation).
     try (deleteFile ((getDir #startupScripts) + "/MaxMCP_Toolbar.ms")) catch ()

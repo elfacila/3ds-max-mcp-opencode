@@ -20,12 +20,14 @@
         )
     )
     local payload = (getDir #userScripts) + "/MaxMCP/max_mcp_ui.py"
-    local macro = (getDir #userMacros) + "/MaxMCP_Launcher.ms"
+    local macro = (getDir #userMacros) + "/MaxMCP_Launcher.mcr"
+    local macroStale = (getDir #userMacros) + "/MaxMCP_Launcher.ms"
     local barSys = (getDir #startupScripts) + "/MaxMCP_Toolbar.ms"
     local barUser = (getDir #userScripts) + "/Startup/MaxMCP_Toolbar.ms"
     local receipt = (getDir #userScripts) + "/MaxMCP/install_receipt.txt"
     print ("installed payload: " + ((doesFileExist payload) as string) + " " + payload)
-    print ("installed macro:   " + ((doesFileExist macro) as string) + " " + macro)
+    print ("installed macro (.mcr): " + ((doesFileExist macro) as string) + " " + macro)
+    print ("stale macro (.ms):      " + ((doesFileExist macroStale) as string) + " (should be false)")
     print ("installed bar (system): " + ((doesFileExist barSys) as string) + " " + barSys)
     print ("installed bar (user):   " + ((doesFileExist barUser) as string) + " " + barUser)
     print ("install receipt:   " + ((doesFileExist receipt) as string) + " " + receipt)

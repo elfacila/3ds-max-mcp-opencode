@@ -2,7 +2,11 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
-## 2026-10-16 — Diagnose verdict: Program Files elevation (installer v1.2.4)
+## 2026-10-16 — Macro lost after reboot: .ms → .mcr (installer v1.2.5)
+
+- **Symptom**: bar survived reboot (v1.2.4 fallback worked) but clicking it said "macro not found" — while the file sat present in userMacros.
+- **Root cause**: Max auto-loads `*.mcr` from userMacros at startup but ignores `*.ms` there. The launcher shipped with the wrong extension, so it registered live (via installer `fileIn`) and never again.
+- **Fix**: installed as `MaxMCP_Launcher.mcr` (content unchanged — a `macroScript` block loads identically); installer deletes the stale `.ms`; uninstall removes both; diagnose reports both (stale should read false).
 
 - **User's diagnose output decoded**: payload ✓ macro ✓ receipt (1.2.3) ✓ dotnet ✓ shell ✓ userScripts writable ✓ — but `startupScripts = C:\Program Files\...` (needs admin) and bar missing. Single broken piece identified, everything else healthy.
 - **Fix**: bar installs to system Startup when writable, else per-user `#userScripts/Startup/` (documented second autoload folder, no elevation). Receipt/summary record which path won; uninstall cleans both; diagnose checks both.
