@@ -1,0 +1,40 @@
+# System Map
+
+Hub node of the vault. Every component below links back here, so Graph view renders the full dependency web. Arrows (`→`) mean "calls / feeds into".
+
+## Runtime graph
+
+```
+OpenCode agent
+    │  MCP/stdio (3 tools: get_scene_info, execute_python, create_primitive)
+    ▼
+[[Bridge-Legacy|mcp_server_3dsmax.py]] ──TCP 127.0.0.1:8080──▶ [[Bridge-Legacy|max_listener.py]] (3ds Max, pump=ctypes)
+                                                              │
+OpenCode ──MCP skill dispatch──▶ [[GUI-Plugin|McpBridgeServer]] (daemon thread + QTimer pump) ──exec──▶ [[Skills-Registry|execute_skill()]]
+                                                                                                        ▲
+[[GUI-Plugin|MaxMcpWindow]] ──Add/Import/Edit/Reload──▶ custom_skills/*.py ──reload_skills()──▶ [[Skills-Registry|SKILL_REGISTRY]]
+        │                                                                              │
+        └─ Execute Locally ──▶ execute_skill() ◀── remote dispatch ─────────────────────┘
+```
+
+## Node catalogue
+
+| Node | File | Role | Links |
+|---|---|---|---|
+| Agent entry | OpenCode | sends MCP tool calls | [[Protocol]], [[Bridge-Legacy]] |
+| Bridge server | `mcp_server_3dsmax.py` | MCP tools → TCP | [[Bridge-Legacy]], [[Protocol]] |
+| Legacy listener | `max_listener.py` | in-Max exec, ctypes pump | [[Bridge-Legacy]], [[Protocol]] |
+| GUI panel | [[GUI-Plugin]] | listener + browser + console | [[Skills-Registry]], [[Protocol]], [[Installer]] |
+| Skill store | [[Skills-Registry]] | registry + autoload + reload | [[GUI-Plugin]], [[Data-Structures]] |
+| Custom skills | `custom_skills/*.py` | user skills, hot-reloadable | [[Skills-Registry]], [[GUI-Plugin]] |
+| Installer | [[Installer]] | MZP, macro, toolbar, icons | [[GUI-Plugin]], [[Install-Guide]] |
+| Wire format | [[Protocol]] | envelopes for code/skill | [[Data-Structures]], [[Bridge-Legacy]] |
+
+## Data-flow edges (for graph reading)
+
+- [[GUI-Plugin]] → [[Skills-Registry]] (imports, calls `execute_skill`, `reload_skills`)
+- [[Skills-Registry]] → custom skills (imports `custom_skills/*.py` at load + reload)
+- [[Installer]] → [[GUI-Plugin]] (deploys `max_mcp_ui.py`, launches via `toggle_mcp_ui`)
+- [[Protocol]] → [[GUI-Plugin]] + [[Bridge-Legacy]] (both speak the same envelopes)
+- [[Data-Structures]] describes the payloads on every edge above
+- [[Dev-Log]] records when each edge was built; [[Install-Guide]] is the deploy path
