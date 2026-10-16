@@ -32,6 +32,10 @@ End-to-end deployment of MaxMCP into 3ds Max 2022. For the design behind each st
 3. Manage skills: **Add New Skill** (template → save → auto-reload), or drop `.py` files into `custom_skills/` and press **Reload Skills**.
 4. Verify: `python test_mcp.py` from the repo (expects ALL TESTS PASSED).
 
+## After a reboot
+
+The button bar returns automatically via Startup Scripts — open the Listener and confirm the `[MaxMCP] toolbar` lines (created → docked). If they are absent, `MaxMCP_Toolbar.ms` is not in Startup Scripts: re-drop the `.mzp`. If the bar reports FAILED, paste the error. At any time you can also run `MaxMCP_showBar()` in the Listener, or Scripting → Run Script → the toolbar file, to bring the bar back without reinstalling.
+
 ## Update / uninstall
 
 - **Update**: drop the newer `.mzp` again — files overwrite, `importlib.reload` applies them live.

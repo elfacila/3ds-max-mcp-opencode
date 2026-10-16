@@ -2,6 +2,12 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
+## 2026-10-16 — Reboot persistence fix (installer v1.2.1)
+
+- **Symptom**: MCP button gone after Max restart. Root cause chain: the earlier all-copies-failed run left no macro/toolbar files behind, so no session could auto-load anything — and the startup script ran silently, leaving zero trace.
+- **Fix**: `MaxMCP_Toolbar.ms` restructured around `MaxMCP_showBar()` (manual recovery from the Listener at any time) with a printed line per step; install proves macro registration via lookup-only `createActionItem` (no UI side effects) and prints a post-flight reboot check (`macro file / startup-bar file / payload / macro live`); summary dialog shows registration + reboot-file status.
+- **Most reboot-proof placement**: macro button dragged onto a real CUI toolbar (stored in the `.cui` file itself) — steps in [[Install-Guide]] and the success dialog.
+
 ## 2026-10-16 — Profiles + live MCP catalog sync (v1.2.0)
 
 - **Profile system** (`skills_registry.py`): `profiles_config.json` (atomic writes, corrupt → backup + defaults), `save/load/delete/get_all/apply_profile`, All Skills dynamic + protected, Floor Plan Shell (modeling + cleanup) / Minimal defaults. Live `_ENABLED` set; `execute_skill` enforces remotely, UI overrides explicitly. `tools_version` + guarded callbacks.

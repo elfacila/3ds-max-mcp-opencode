@@ -7,14 +7,19 @@
    The button calls the "MCP Tools" > "MaxMCP_Launcher" macroScript, so the
    toggle logic (no duplicate windows) lives in one place: max_mcp_ui.py.
 
+   Every step prints to the Listener: after a reboot, open the Listener and
+   look for the "[MaxMCP] toolbar" lines. If they are absent, this file is
+   not in Startup Scripts (re-run the installer). If MaxMCP_showBar()
+   reports FAILED, paste the error.
+   Manual recovery at any time: Scripting > Run Script > this file, or run
+   MaxMCP_showBar() in the Listener.
+
    To place the icon on ANOTHER toolbar instead (e.g. the main toolbar):
    Customize > Customize User Interface > Toolbars > Category "MCP Tools"
    > drag "Max MCP" onto any toolbar. It uses the bundled 16/24px icons.
+   A macro button on a real CUI toolbar is the most reboot-proof placement
+   Max offers (stored in the .cui file itself).
    ========================================================================== */
-
--- Tear down a previous instance, if any.
-try (cui.unRegisterDialogBar MaxMCP_BarRO) catch ()
-try (destroyDialog MaxMCP_BarRO) catch ()
 
 rollout MaxMCP_BarRO "MCP" width:60 height:34
 (
@@ -31,15 +36,37 @@ rollout MaxMCP_BarRO "MCP" width:60 height:34
     )
 )
 
-createDialog MaxMCP_BarRO style:#(#style_toolwindow, #style_sysmenu)
+fn MaxMCP_showBar =
+(
+    -- (Re)create + dock the button bar. Returns true on success.
+    -- Called automatically below (install + every Max startup) and usable
+    -- manually from the Listener if the bar ever goes missing.
+    local ok = false
+    try
+    (
+        try (cui.unRegisterDialogBar MaxMCP_BarRO) catch ()
+        try (destroyDialog MaxMCP_BarRO) catch ()
+        createDialog MaxMCP_BarRO style:#(#style_toolwindow, #style_sysmenu)
+        print "[MaxMCP] toolbar: button dialog created."
+        try
+        (
+            cui.registerDialogBar MaxMCP_BarRO
+            cui.dockDialogBar MaxMCP_BarRO #cui_dock_top
+            print "[MaxMCP] toolbar: docked (top)."
+        )
+        catch
+        (
+            print ("[MaxMCP] toolbar: dock refused (" + (getCurrentException()) + "); floating instead.")
+            try (cui.registerDialogBar MaxMCP_BarRO) catch ()
+        )
+        ok = true
+    )
+    catch
+    (
+        print ("[MaxMCP] toolbar FAILED: " + (getCurrentException()))
+    )
+    ok
+)
 
--- Dock it like a toolbar; fall back to floating if docking is refused.
-try
-(
-    cui.registerDialogBar MaxMCP_BarRO
-    cui.dockDialogBar MaxMCP_BarRO #cui_dock_top
-)
-catch
-(
-    try (cui.registerDialogBar MaxMCP_BarRO) catch ()
-)
+print "[MaxMCP] toolbar startup script running ..."
+MaxMCP_showBar()

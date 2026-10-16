@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.0)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.1)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -24,7 +24,7 @@
         point, and cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.2.0"
+global MaxMCP_version = "1.2.1"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
@@ -231,11 +231,22 @@ fn MaxMCP_install =
 
     -- 2. MacroScript into userMacros + live registration for this session.
     local macroOK = MaxMCP_copyOne (srcDir + "MCP_MacroScript.ms") (macroDir + "MaxMCP_Launcher.ms")
+    local macroLive = false
     if (macroOK) do
     (
         try (fileIn (macroDir + "MaxMCP_Launcher.ms")) catch
         (
             print "[MaxMCP] WARNING: macro installed but live registration failed; restart Max."
+        )
+        -- Prove the macro is registered WITHOUT running any UI: lookup-only.
+        macroLive = try ((menuMan.createActionItem MaxMCP_macroName MaxMCP_category) != undefined) catch (false)
+        if (macroLive) then
+        (
+            print "[MaxMCP] macro registered: MCP Tools > Max MCP."
+        )
+        else
+        (
+            print "[MaxMCP] WARNING: macro file present but not registered this session; restart Max."
         )
     )
 
@@ -284,16 +295,31 @@ fn MaxMCP_install =
         print "[MaxMCP] WARNING: cui.saveConfig() failed; UI state saves on Max exit."
     )
 
+    -- 8. Post-flight persistence check: these three files are what the next
+    -- Max session auto-loads. If any is missing, say so now (not next week).
+    local persistMacro = doesFileExist (macroDir + "MaxMCP_Launcher.ms")
+    local persistBar = doesFileExist (startupDir + "MaxMCP_Toolbar.ms")
+    local persistPy = doesFileExist (dstDir + "max_mcp_ui.py")
+    print ("[MaxMCP] reboot check: macro file=" + (persistMacro as string) + \
+        " startup-bar file=" + (persistBar as string) + \
+        " payload=" + (persistPy as string) + \
+        " macro live=" + (macroLive as string))
+
     local menuTxt = (if menuOK then "added" else "SKIPPED (see Listener)")
     local barTxt = (if nativeOK then "native CUI toolbar" else "compact docked bar")
     if (not barOK) do (barTxt = "SKIPPED (copy failed)")
+    local regTxt = (if macroLive then "yes" else "NO - restart Max, then re-check")
+    local persistTxt = (if (persistMacro and persistBar and persistPy) then "all present" else "MISSING FILES (see Listener)")
     local summary = "MaxMCP v" + MaxMCP_version + " installed.\n\n" + \
         "Python:  " + dstDir + "\n" + \
-        "Macro:  MCP Tools  >  Max MCP\n" + \
+        "Macro:  MCP Tools  >  Max MCP  (registered: " + regTxt + ")\n" + \
         "Menu:  " + menuTxt + "\n" + \
-        "Toolbar:  " + barTxt + "\n\n" + \
-        "Press the MCP button to show/hide the panel.\n\n" + \
-        "Tip: to put the icon on any existing toolbar, open Customize > Customize User Interface > Toolbars, pick category 'MCP Tools', and drag 'Max MCP' onto that toolbar."
+        "Toolbar:  " + barTxt + "\n" + \
+        "Reboot files:  " + persistTxt + "\n\n" + \
+        "Press the MCP button to show/hide the panel.\n" + \
+        "After a Max restart the bar returns via Startup Scripts " + \
+        "(watch the Listener for the '[MaxMCP] toolbar' lines).\n\n" + \
+        "Tip: for a permanent icon on any existing toolbar, open Customize > Customize User Interface > Toolbars, pick category 'MCP Tools', and drag 'Max MCP' onto that toolbar."
     print ("[MaxMCP] " + summary)
     messageBox summary title:"MaxMCP installed"
     (payloadOK and macroOK and menuOK)
