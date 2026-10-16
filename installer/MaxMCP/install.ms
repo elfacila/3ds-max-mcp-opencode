@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.3)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.4)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -24,7 +24,7 @@
         point, and cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.2.3"
+global MaxMCP_version = "1.2.4"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
@@ -394,11 +394,23 @@ fn MaxMCP_install =
         )
     )
 
-    -- 4. Button bar into startup scripts + show it right now.
-    local barOK = MaxMCP_copyOne (srcDir + "MaxMCP_Toolbar.ms") (startupDir + "MaxMCP_Toolbar.ms")
+    -- 4. Button bar: Max runs BOTH Startup folders at launch (system-wide
+    -- under Program Files AND per-user under #userScripts). The system one
+    -- needs elevation, so prefer it only when writable; otherwise the
+    -- per-user Startup folder, which needs none. Either way the bar
+    -- auto-returns after every reboot.
+    local userStartupDir = (getDir #userScripts) + "/Startup/"
+    local barDst = startupDir + "MaxMCP_Toolbar.ms"
+    local barOK = MaxMCP_copyOne (srcDir + "MaxMCP_Toolbar.ms") barDst
+    if (not barOK) do
+    (
+        print "[MaxMCP] system Startup not writable (elevation); trying per-user Startup."
+        barDst = userStartupDir + "MaxMCP_Toolbar.ms"
+        barOK = MaxMCP_copyOne (srcDir + "MaxMCP_Toolbar.ms") barDst
+    )
     if (barOK) do
     (
-        try (fileIn (startupDir + "MaxMCP_Toolbar.ms")) catch
+        try (fileIn barDst) catch
         (
             print "[MaxMCP] WARNING: button bar will appear after restart."
         )
@@ -414,7 +426,7 @@ fn MaxMCP_install =
         local receipt = "MaxMCP " + MaxMCP_version + " installed " + stamp + "\n" + \
             "payload: " + dstDir + "\n" + \
             "macro:   " + macroDir + "MaxMCP_Launcher.ms\n" + \
-            "bar:     " + startupDir + "MaxMCP_Toolbar.ms\n"
+            "bar:     " + barDst + "\n"
         (dotNetClass "System.IO.File").WriteAllText (dstDir + "install_receipt.txt") receipt
         receiptOK = doesFileExist (dstDir + "install_receipt.txt")
     )
@@ -450,7 +462,7 @@ fn MaxMCP_install =
     -- 8. Post-flight persistence check: these three files are what the next
     -- Max session auto-loads. If any is missing, say so now (not next week).
     local persistMacro = doesFileExist (macroDir + "MaxMCP_Launcher.ms")
-    local persistBar = doesFileExist (startupDir + "MaxMCP_Toolbar.ms")
+    local persistBar = (barOK and (doesFileExist barDst))
     local persistPy = doesFileExist (dstDir + "max_mcp_ui.py")
     print ("[MaxMCP] reboot check: macro file=" + (persistMacro as string) + \
         " startup-bar file=" + (persistBar as string) + \
@@ -459,6 +471,7 @@ fn MaxMCP_install =
 
     local menuTxt = (if menuOK then "added" else "SKIPPED (see Listener)")
     local barTxt = (if nativeOK then "native CUI toolbar" else "compact docked bar")
+    if (barOK) do (barTxt = barTxt + " (" + barDst + ")")
     if (not barOK) do (barTxt = "SKIPPED (copy failed)")
     local regTxt = (if macroLive then "yes" else "NO - restart Max, then re-check")
     local persistTxt = (if (persistMacro and persistBar and persistPy) then "all present" else "MISSING FILES (see Listener)")
@@ -494,11 +507,13 @@ fn MaxMCP_uninstall =
     )
     try (deleteFile (dstDir + "install_receipt.txt")) catch ()
     try (deleteFile ((getDir #userMacros) + "/MaxMCP_Launcher.ms")) catch ()
+    -- Bar may live in either Startup folder (system needs elevation).
+    try (deleteFile ((getDir #startupScripts) + "/MaxMCP_Toolbar.ms")) catch ()
+    try (deleteFile ((getDir #userScripts) + "/Startup/MaxMCP_Toolbar.ms")) catch ()
     for f in MaxMCP_iconFiles do
     (
         try (deleteFile ((getDir #userIcons) + "/" + f)) catch ()
     )
-    try (deleteFile ((getDir #startupScripts) + "/MaxMCP_Toolbar.ms")) catch ()
     -- 4. Persist. The macro fully unloads on the next Max restart.
     try (cui.saveConfig()) catch ()
     messageBox "MaxMCP removed. Restart 3ds Max to unload the macro." title:"MaxMCP"

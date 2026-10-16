@@ -2,7 +2,10 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
-## 2026-10-16 — Full audit + installer v1.2.3 (response to "still not working")
+## 2026-10-16 — Diagnose verdict: Program Files elevation (installer v1.2.4)
+
+- **User's diagnose output decoded**: payload ✓ macro ✓ receipt (1.2.3) ✓ dotnet ✓ shell ✓ userScripts writable ✓ — but `startupScripts = C:\Program Files\...` (needs admin) and bar missing. Single broken piece identified, everything else healthy.
+- **Fix**: bar installs to system Startup when writable, else per-user `#userScripts/Startup/` (documented second autoload folder, no elevation). Receipt/summary record which path won; uninstall cleans both; diagnose checks both.
 
 - **Audit result**: every file runnable off-Max verified green (15/15 UI, 25 + 18 registry suites, live 8080 ping earlier). Entire installer chain never executed live — prime suspect zone.
 - **Doc-confirmed bugs fixed**: `copyFile` FAILS when the target exists → `deleteFile` first (re-runs/updates failed 100% before this); stream copy rewritten on the documented BinStream API (`fopen`/`ReadByte`/`WriteByte`/`FClose` + `gc`); `deleteFile` confirmed file-only (dirs untouched).
