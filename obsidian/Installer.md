@@ -1,6 +1,6 @@
 # Installer (MZP package)
 
-One-click deploy: `installer/MaxMCP_Plugin.mzp` — 9 files at zip root. Drag into a viewport (or Scripting → Run Script). Full file script in [[Install-Guide]].
+One-click deploy: `installer/MaxMCP_Plugin.mzp` — 10 files at zip root (incl. `MaxMCP_Diagnose.ms`). Drag into a viewport (or Scripting → Run Script). Full file script in [[Install-Guide]].
 
 ## Payload
 

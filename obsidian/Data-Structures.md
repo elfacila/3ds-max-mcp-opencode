@@ -59,7 +59,7 @@ SkillSpec(
 ├── max_mcp_ui.py / skills_registry.py   # shipped sources (see [[GUI-Plugin]], [[Skills-Registry]])
 ├── custom_skills/                       # dev-time skill drafts (env override MAXMCP_CUSTOM_SKILLS)
 ├── installer/MaxMCP/                    # MZP payload staging (see [[Installer]])
-├── installer/MaxMCP_Plugin.mzp          # 9-file install archive
+├── installer/MaxMCP_Plugin.mzp          # 10-file install archive
 ├── max_listener.py / mcp_server_3dsmax.py / test_mcp.py   # see [[Bridge-Legacy]]
 └── obsidian/                            # this vault
         ↓ install ↓

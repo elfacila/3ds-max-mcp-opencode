@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.2)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.3)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -24,7 +24,7 @@
         point, and cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.2.2"
+global MaxMCP_version = "1.2.3"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
@@ -113,30 +113,34 @@ fn MaxMCP_probeDir dir label =
 
 fn MaxMCP_streamCopy src dst =
 (
-    -- Last-resort copy path: manual byte stream through MAXScript file I/O.
-    -- Different code path from copyFile / .NET / child-process copies.
-    -- Partial results are deleted, never left behind.
+    -- Last-resort copy path: manual byte stream through the documented
+    -- BinStream API (fopen / ReadByte / WriteByte / FClose). Different code
+    -- path from copyFile / .NET / child-process copies. Partial results are
+    -- deleted, never left behind.
     local ok = false
+    local fin = undefined
+    local fout = undefined
     try
     (
-        local fin = openFile src mode:"rb"
+        fin = fopen src "rb"
         if (fin != undefined) do
         (
-            local fout = openFile dst mode:"wb"
+            fout = fopen dst "wb"
             if (fout != undefined) do
             (
                 try
                 (
-                    while (not (eof fin)) do (writeByte fout (readByte fin))
+                    while (not (eof fin)) do (WriteByte fout (ReadByte fin))
                     ok = true
                 )
                 catch ()
-                try (close fout) catch ()
             )
-            try (close fin) catch ()
         )
     )
     catch ()
+    try (if (fout != undefined) do (FClose fout)) catch ()
+    try (if (fin != undefined) do (FClose fin)) catch ()
+    try (gc light:true) catch ()
     if (ok and not (doesFileExist dst)) do (ok = false)
     if (not ok) do (try (deleteFile dst) catch ())
     ok
@@ -156,6 +160,9 @@ fn MaxMCP_copyOne src dst =
         print ("[MaxMCP] destination folder cannot be created: " + dir)
         return false
     )
+    -- copyFile FAILS when the target already exists (documented): clear it
+    -- first so re-runs and updates overwrite instead of failing 100%.
+    try (deleteFile dst) catch ()
     try (if (copyFile src dst) do (return true)) catch ()
     -- copyFile failed without a reason: ask the OS directly. This reveals
     -- access-denied / Controlled-Folder blocks / locked files / bad paths.
@@ -397,6 +404,23 @@ fn MaxMCP_install =
         )
     )
 
+    -- 4b. Install receipt: proves (now and after any reboot) exactly what
+    -- this run wrote and where. Read-back verified; a missing receipt after
+    -- a reboot means "never written", a present one means "deleted later".
+    local receiptOK = false
+    try
+    (
+        local stamp = try ((localTime) as string) catch ("unknown time")
+        local receipt = "MaxMCP " + MaxMCP_version + " installed " + stamp + "\n" + \
+            "payload: " + dstDir + "\n" + \
+            "macro:   " + macroDir + "MaxMCP_Launcher.ms\n" + \
+            "bar:     " + startupDir + "MaxMCP_Toolbar.ms\n"
+        (dotNetClass "System.IO.File").WriteAllText (dstDir + "install_receipt.txt") receipt
+        receiptOK = doesFileExist (dstDir + "install_receipt.txt")
+    )
+    catch ()
+    print ("[MaxMCP] receipt: " + (if receiptOK then "written + read back OK" else "FAILED (non-fatal)"))
+
     -- Abort here (not after registering half a UI): a bar or menu without
     -- the payload/macro behind it only produces "macro not found" popups.
     if ((not payloadOK) or (not macroOK)) do
@@ -468,6 +492,7 @@ fn MaxMCP_uninstall =
     (
         try (deleteFile (dstDir + f)) catch ()
     )
+    try (deleteFile (dstDir + "install_receipt.txt")) catch ()
     try (deleteFile ((getDir #userMacros) + "/MaxMCP_Launcher.ms")) catch ()
     for f in MaxMCP_iconFiles do
     (

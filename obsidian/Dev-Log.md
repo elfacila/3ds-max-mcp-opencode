@@ -2,7 +2,11 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
 
-## 2026-10-16 — Self-sufficient installer (v1.2.2)
+## 2026-10-16 — Full audit + installer v1.2.3 (response to "still not working")
+
+- **Audit result**: every file runnable off-Max verified green (15/15 UI, 25 + 18 registry suites, live 8080 ping earlier). Entire installer chain never executed live — prime suspect zone.
+- **Doc-confirmed bugs fixed**: `copyFile` FAILS when the target exists → `deleteFile` first (re-runs/updates failed 100% before this); stream copy rewritten on the documented BinStream API (`fopen`/`ReadByte`/`WriteByte`/`FClose` + `gc`); `deleteFile` confirmed file-only (dirs untouched).
+- **New**: `MaxMCP_Diagnose.ms` (10th MZP file) — zero-risk pre-install check printing all four `getDir`s, installed-file presence, .NET/shell/probe results, live macro registration. `install_receipt.txt` written + read back on install, cleaned on uninstall; one `doesFileExist` after reboot separates "never written" from "deleted later".
 
 - **Ask**: installer must do it all by itself, no Explorer fallback.
 - **Fix**: copy chain is now copyFile → .NET `File.Copy` → hidden shell `copy` (outside Max's process, dodges in-process hooks) → manual MAXScript byte stream (`MaxMCP_streamCopy`, partials deleted). Each success path logged (`copied via shell/stream`); total failure prints the manual steps to the Listener. If all four fail it is definitively an OS denial no script can override.
