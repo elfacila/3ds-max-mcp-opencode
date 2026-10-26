@@ -22,6 +22,13 @@
 11. **MAXScript-style `name:value` kwargs are invalid Python.** `rt.Box(length=10.0)` — `=` not `:`.
 12. **Remote rescue is possible.** The queue-served `stop_max_listener()` freed a wedged session without killing Max (scene saved remotely first via `saveMaxFile`).
 
+## v1.4.x notes
+
+- **Toolbar hidden?** By design since v1.4.1 — run `MaxMCP_showBar()` in the Listener, or drag the macro onto a CUI toolbar (see [[Install-Guide]]).
+- **Panel clones on click?** Fixed in v1.4.3 — reinstall the `.mzp` and close leftover duplicates once.
+
 ## Emergency sequence
 
 Scene safe? If unsure, save remotely first. Then: panel STOP → `F11` stop → remote stop → kill `3dsmax.exe` (Task Manager) → reopen → Run Script. Check the log to see which pump won.
+
+Related: [[System-Map]], [[Listener]], [[Install-Guide]].

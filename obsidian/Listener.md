@@ -5,7 +5,7 @@ Runs **inside 3ds Max 2022** via Scripting → Run Script. Python 3.7 compatible
 - Listens on `127.0.0.1:8080` (see [[Protocol]]).
 - Executes received code with `exec` in a **persistent namespace** (`rt` pre-imported, variables survive across calls).
 - Structured results via the `__mcp_result__` convention; stdout/stderr captured; tracebacks returned on error.
-- Reports `LISTENER_VERSION` (`1.6.1-ctypes`) in every response so clients can verify which script is loaded.
+- Reports `LISTENER_VERSION` (`1.4.3`) in every response so clients can verify which script is loaded. Legacy bridge — the canonical in-Max transport is now the [[GUI-Plugin]].
 - Startup succeeds **only if a pump is actually active** — "already running" never masks a missing pump.
 - Independent file log at `%TEMP%\max_mcp_bridge.log` (socket binds, pump heartbeats, failures) — readable even when Max or the socket is wedged.
 - `stop_max_listener()` shuts everything down (socket, timers, queue drain).
@@ -19,3 +19,5 @@ Runs **inside 3ds Max 2022** via Scripting → Run Script. Python 3.7 compatible
 ## Version history
 
 See [[Changelog]].
+
+Related: [[System-Map]], [[Protocol]], [[Changelog]], [[Troubleshooting]].

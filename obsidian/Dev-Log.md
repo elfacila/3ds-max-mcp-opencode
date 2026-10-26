@@ -1,6 +1,6 @@
 # Dev Log
 
-Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in `vault/`.
+Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in [[Bridge-Legacy]].
 
 ## 2026-10-16 — ✅ Install saga closed: v1.2.6 confirmed working in-session
 
@@ -54,7 +54,7 @@ Build history, newest first. Design rationale for the current state in [[System-
 - **Skill Manager UI** (`max_mcp_ui.py` → v1.1.0): toolbar row (Add/Import/Edit/Folder/Reload), modal `AddSkillDialog`, display titles + source tooltips, hot-reload diff logging. Existing 5-test suite still green.
 - **MZP repacked** with synced payload.
 - **Git**: committed `20960ab` (12 files, +5321), pushed `master` → `elfacila/3ds-max-mcp-opencode`. `opencode.json` left uncommitted (machine-local temp path).
-- **This vault** (`obsidian/`): 10 notes + graph config, all cross-linked.
+- **This vault** (`obsidian/`): 17 notes + graph config, all cross-linked.
 
 ## 2026-10-16 — mzp.run protocol fix
 
@@ -74,7 +74,7 @@ Build history, newest first. Design rationale for the current state in [[System-
 
 ## Prior (Sept 2026) — bridge + DXF walls
 
-- Listener evolution `1.0 → 1.6.1-ctypes` (documented in `vault/Changelog.md`); 3 MCP tools verified live; creative session (torus→poly→smooth, twist tower, spline+sweep).
+- Listener evolution `1.0 → 1.4.3` (documented in [[Changelog]]); 5 MCP tools verified live; creative session (torus→poly→smooth, twist tower, spline+sweep).
 - DXF workflow: `Clean CAD.dxf` → ezdxf audit → 197 wall splines built in Max, zero-loss verified; walls overlay test caught ~10 deviating footprints (documented, rebuild approved).
 
 Related: [[System-Map]], [[Installer]], [[Install-Guide]], [[GUI-Plugin]], [[Skills-Registry]].

@@ -32,3 +32,5 @@
 - Obsidian vault: Home, Architecture, Listener, MCP-Server, Protocol, Configuration, Testing, Troubleshooting, Changelog.
 - Verified live: full suite + creative session (torus→poly→smooth, twist tower, spline+sweep) against a production scene.
 - DXF workflow: `Drawings/Clean CAD.dxf` committed; ezdxf audit → wall-layer extraction → 197 splines built in Max, verified zero-loss (see [[Testing]]).
+
+Related: [[System-Map]], [[Dev-Log]], [[Home]].

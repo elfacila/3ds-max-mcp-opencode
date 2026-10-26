@@ -53,6 +53,6 @@ The bundled docked bar is deliberately tiny (60×34, "MCP" button) and hidden by
 
 - Listener shows the exact step (`WARNING` lines, never silent aborts).
 - Macro launch failures print the full Python traceback (not just `str(e)`).
-- Common past failures and causes: [[Installer]] + older field notes in `vault/Troubleshooting.md`.
+- Common past failures and causes: [[Installer]] + field notes in [[Troubleshooting]].
 
 Related: [[Installer]], [[GUI-Plugin]], [[Skills-Registry]], [[System-Map]].

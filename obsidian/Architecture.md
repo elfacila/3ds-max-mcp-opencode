@@ -3,7 +3,7 @@
 ```
 ┌─────────────┐  MCP/stdio   ┌──────────────────┐  TCP 127.0.0.1:8080  ┌────────────────┐
 │   OpenCode  │ ◄──────────► │ mcp_server_3dsmax │ ◄──────────────────► │ 3ds Max 2022   │
-│   (agent)   │  3 tools     │  (Python 3.10+)   │  newline-delim JSON  │ max_listener   │
+│   (agent)   │  5 tools     │  (Python 3.10+)   │  newline-delim JSON  │ max_listener   │
 └─────────────┘              └──────────────────┘                      │ (Python 3.7)   │
                                                                       └────────────────┘
 ```
@@ -11,6 +11,8 @@
 ## Why two processes?
 
 3ds Max 2022 embeds Python 3.7, which cannot run the modern MCP SDK. So the MCP server lives in modern Python and talks to Max over TCP. One short-lived TCP connection per tool call — no persistent state to go stale.
+
+The canonical in-Max side is now the [[GUI-Plugin]] (`McpBridgeServer`: same envelopes + skill dispatch + catalog sync); `max_listener.py` is the legacy/minimal bridge. Run only one bridge at a time (shared port 8080).
 
 ## Threading model (listener)
 
@@ -27,3 +29,5 @@ See [[Listener]] for the full evolution and [[Troubleshooting]] for why each ear
 - `registerTimeCallback` fires only while animation time changes — useless in a static scene.
 - This Max install has **no `clr`/pythonnet module** — no WinForms at all.
 - Surviving design: pure-stdlib socket thread + ctypes `SetTimer` pump + WinForms-free operation.
+
+Related: [[System-Map]], [[Listener]], [[MCP-Server]], [[Troubleshooting]].

@@ -16,6 +16,13 @@ Obsidian vault for the **MaxMCP** project — MCP bridge + GUI plugin + skills s
 - [[Installer]] — `.mzp` package, MacroScript, toolbar, icons
 - [[Protocol]] — TCP wire format and dispatch paths
 - [[Bridge-Legacy]] — the original `max_listener.py` / `mcp_server_3dsmax.py` pair
+- [[Architecture]] — how the pieces fit together
+- [[Listener]] — `max_listener.py`, the in-Max legacy side
+- [[MCP-Server]] — `mcp_server_3dsmax.py`, the OpenCode side
+- [[Configuration]] — `opencode.json` registration
+- [[Testing]] — test plan, suites, and live results
+- [[Troubleshooting]] — every freeze, dead end, and field lesson
+- [[Changelog]] — version history
 
 ## Quick status
 

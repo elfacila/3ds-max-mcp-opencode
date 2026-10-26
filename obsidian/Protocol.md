@@ -21,6 +21,23 @@ One JSON object per line (UTF-8), one request → one response, short-lived conn
 2. OpenCode skill call → `McpBridgeServer` → `execute_skill()` → [[Skills-Registry]].
 3. UI button → `execute_skill()` directly (main thread, no socket).
 
-Timeouts: 30 s client read, 120 s main-thread exec wait (timeout returns a structured error, never a hang).
+Timeouts: 30 s client read, 120 s main-thread exec wait (timeout returns a structured error, never a hang). Max 1 MB code per request.
+
+## Legacy envelope detail
+
+The original `{"code"}` form and its response shape (from the pre-GUI notes):
+
+```json
+{
+  "id": "<echoed id>",
+  "status": "ok | error",
+  "output": "<captured stdout+stderr>",
+  "result": "<value of __mcp_result__ (JSON-safe, else repr)> | null",
+  "error": "<traceback or null>",
+  "version": "<running side version>"
+}
+```
+
+Conventions: assign `__mcp_result__` in Max-side code for structured data, otherwise parse `output`. The exec namespace persists across calls — imports and variables survive.
 
 Related: [[System-Map]], [[Data-Structures]], [[GUI-Plugin]], [[Bridge-Legacy]].

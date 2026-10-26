@@ -17,7 +17,7 @@ Run: `python test_mcp.py` → exit 0 + `ALL TESTS PASSED`.
 ## Live results (production architectural scene, 13 objects)
 
 - `test_mcp.py`: ALL TESTS PASSED against real 3ds Max 2022.
-- MCP CLI: `--ping` / `--box` pass; SDK lists exactly `create_primitive`, `execute_python`, `get_scene_info`.
+- MCP CLI: `--ping` / `--box` / `--skills` pass; SDK lists `create_primitive`, `execute_python`, `get_scene_info`, `list_available_skills`, `execute_skill`.
 - Creative session: Torus → Editable Poly → Smooth (Auto Smooth on), twisted tower (Box + Twist 180°), S-curve spline + Sweep, rescale/delete/select flows — all executed live.
 
 ## DXF import (`Drawings/Clean CAD.dxf`)
@@ -30,7 +30,9 @@ Run: `python test_mcp.py` → exit 0 + `ALL TESTS PASSED`.
 
 ## Manual verification guide
 
-1. 3ds Max 2022 → Scripting → Run Script → `max_listener.py`. Expect `START version=1.6.1-ctypes pump=ctypes` in `%TEMP%\max_mcp_bridge.log`.
+1. 3ds Max 2022 → Scripting → Run Script → `max_listener.py`. Expect `START version=1.4.3 pump=ctypes` in `%TEMP%\max_mcp_bridge.log` (or the [[GUI-Plugin]] panel → Start Server).
 2. `python mcp_server_3dsmax.py --ping` → `PING OK`.
 3. `python test_mcp.py` → `ALL TESTS PASSED`.
 4. `opencode mcp list` shows `3dsmax` connected.
+
+Related: [[System-Map]], [[MCP-Server]], [[Bridge-Legacy]].
