@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 
 try:
     import queue
@@ -108,6 +109,96 @@ EXEC_WAIT_TIMEOUT = 120.0
 BUFFER_SIZE = 65536
 MAX_CODE_SIZE = 1024 * 1024
 UI_VERSION = "1.4.3"
+
+
+# ---------------------------------------------------------------------------
+# Instance pinning: several 3ds Max sessions may run at once. This listener
+# advertises exactly one of them (this one) in an endpoint file; the MCP
+# server drives ONLY the advertised instance and refuses foreign answers.
+# Last Start wins: every Start rewrites the file, so the most recently
+# started listener is always the linked one; the others are ignored.
+# ---------------------------------------------------------------------------
+ENDPOINT_FILENAME = "maxmcp_endpoint.json"
+ENDPOINT_ENV = "MAXMCP_ENDPOINT"
+HELLO_TIMEOUT = 2.0
+FALLBACK_PORTS = tuple(range(8081, 8091))  # tried after the requested port
+
+
+def _endpoint_path():
+    """Location of the advertised endpoint (overridable for tests)."""
+    override = os.environ.get(ENDPOINT_ENV)
+    if override:
+        return os.path.abspath(override)
+    tmp = os.environ.get("TEMP") or os.path.expanduser("~")
+    return os.path.join(tmp, ENDPOINT_FILENAME)
+
+
+def _write_endpoint(host, port, instance_id, source="max_mcp_ui"):
+    """Advertise this listener as THE linked instance. Returns bool."""
+    try:
+        payload = {"host": host, "port": int(port),
+                   "instance_id": instance_id, "pid": os.getpid(),
+                   "version": UI_VERSION, "source": source}
+        tmp = _endpoint_path() + ".tmp-%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp, _endpoint_path())
+        return True
+    except Exception:
+        return False
+
+
+def _clear_endpoint(instance_id):
+    """Remove our advertisement, but never another instance's. Returns bool."""
+    try:
+        path = _endpoint_path()
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict) and data.get("instance_id") == instance_id:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _probe_hello(host, port, timeout=HELLO_TIMEOUT):
+    """Identify whoever holds (host, port). Dict or None. Never raises.
+
+    Safe: the hello request executes no scene code on either listener.
+    """
+    try:
+        req = (json.dumps({"id": "hello-probe", "hello": True}) + "\n"
+               ).encode("utf-8")
+        with socket.create_connection((host, port),
+                                      timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(req)
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        if not data.strip():
+            return None
+        resp = json.loads(data.decode("utf-8", errors="replace"))
+        if not isinstance(resp, dict) or resp.get("status") != "ok":
+            return None
+        result = resp.get("result") or {}
+        token = result.get("instance_id") or resp.get("instance_id")
+        if not token:
+            return None
+        return {"instance_id": str(token),
+                "version": result.get("version")
+                or resp.get("version"),
+                "source": result.get("source")}
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +277,7 @@ class McpBridgeServer(object):
         self.log_fn = log_fn or (lambda msg: None)
         self.client_fn = client_fn or (lambda n: None)
         self._watchers = []  # [(holder, req_id)] parked await_change polls
+        self.instance_id = None  # token minted per Start; stamped on replies
         try:
             if skills_registry is not None:
                 skills_registry.on_tools_changed(
@@ -239,7 +331,13 @@ class McpBridgeServer(object):
 
     # -- lifecycle ------------------------------------------------------
     def start(self, host=None, port=None):
-        """Bind + spawn the daemon accept thread. Returns (ok, message)."""
+        """Bind + spawn the daemon accept thread. Returns (ok, message).
+
+        When the requested port is held by another listener, fall back to
+        the first free port (8081..8090, then ephemeral) and advertise it:
+        last Start wins, so THIS Max becomes the linked instance and the
+        other sessions are ignored by the MCP server.
+        """
         with self._lock:
             if self._running:
                 return (False, "Already running on %s:%d."
@@ -248,39 +346,96 @@ class McpBridgeServer(object):
         if port is None:
             port = DEFAULT_PORT
         port = int(port)
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            srv.bind((host, port))
-        except Exception as exc:
+        # Probe-first: on Windows two SO_REUSEADDR sockets can bind the
+        # SAME port and split traffic, so "bind failed" is NOT a reliable
+        # occupancy test there. Probing hello identifies the holder without
+        # executing anything, on every platform.
+        occupant = None
+        if port != 0:
+            occupant = _probe_hello(host, port)
+        if occupant is not None:
+            self._log("port %d already held by MaxMCP %s (instance %.8s); "
+                      "that Max owns it - scanning fallback ports" % (
+                          port, occupant.get("source") or "listener",
+                          occupant.get("instance_id")))
+            candidates = [p for p in FALLBACK_PORTS if p != port] + [0]
+        else:
+            candidates = [port] + [p for p in FALLBACK_PORTS
+                                   if p != port] + [0]
+        bound_srv = None
+        bound_port = None
+        bind_error = None
+        for cand in candidates:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                # Windows: refuse shared binds so a second listener can
+                # never silently split traffic with this one.
+                srv.setsockopt(socket.SOL_SOCKET,
+                               socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                srv.close()
-            except Exception:
-                pass
-            return (False, "Cannot bind %s:%d: %s" % (host, port, exc))
-        try:
-            srv.listen(5)
-        except Exception as exc:
+                srv.bind((host, cand))
+            except Exception as exc:
+                bind_error = exc
+                try:
+                    srv.close()
+                except Exception:
+                    pass
+                if cand == port and occupant is None:
+                    found = _probe_hello(host, port)
+                    if found is not None:
+                        occupant = found
+                        self._log("port %d held by MaxMCP %s (instance %.8s)"
+                                  % (port, found.get("source") or "listener",
+                                     found.get("instance_id")))
+                continue
             try:
-                srv.close()
+                srv.listen(5)
+            except Exception as exc:
+                bind_error = exc
+                try:
+                    srv.close()
+                except Exception:
+                    pass
+                continue
+            bound_srv = srv
+            try:
+                bound_port = int(srv.getsockname()[1])
             except Exception:
-                pass
-            return (False, "Listen failed: %s" % exc)
-        srv.settimeout(ACCEPT_TIMEOUT)
+                bound_port = cand
+            break
+        if bound_srv is None:
+            return (False, "Cannot bind %s:%d nor any fallback port: %s"
+                    % (host, port, bind_error))
+        bound_srv.settimeout(ACCEPT_TIMEOUT)
+        self.instance_id = uuid.uuid4().hex
         with self._lock:
-            self._server_socket = srv
+            self._server_socket = bound_srv
             self._running = True
             self.host = host
-            self.port = port
+            self.port = bound_port
         worker = threading.Thread(target=self._accept_loop,
                                   name="McpBridgeAccept")
         worker.daemon = True
         with self._lock:
             self._accept_thread = worker
         worker.start()
-        self._log("listening on %s:%d (accept thread=%s)"
-                  % (host, port, worker.name))
-        return (True, "Listening on %s:%d." % (host, port))
+        short = self.instance_id[:8]
+        if bound_port != port:
+            if occupant is not None:
+                self._log("port %d held by MaxMCP %s (instance %.8s); "
+                          "fell back to %d" % (
+                              port, occupant.get("source") or "listener",
+                              occupant.get("instance_id"), bound_port))
+            else:
+                self._log("port %d unavailable (%s); fell back to %d"
+                          % (port, bind_error, bound_port))
+        _write_endpoint(host, bound_port, self.instance_id)
+        self._log("listening on %s:%d instance %s (accept thread=%s)"
+                  % (host, bound_port, short, worker.name))
+        return (True, "Listening on %s:%d [instance %s]." % (
+            host, bound_port, short))
 
     def stop(self):
         with self._lock:
@@ -288,6 +443,8 @@ class McpBridgeServer(object):
             srv = self._server_socket
             self._server_socket = None
             self._accept_thread = None
+            token, host, port = self.instance_id, self.host, self.port
+            self.instance_id = None
         if srv is not None:
             try:
                 srv.close()
@@ -301,6 +458,12 @@ class McpBridgeServer(object):
         with self._lock:
             self._active_clients = 0
         self._set_clients(0)
+        if token is not None:
+            if _clear_endpoint(token):
+                self._log("endpoint withdrawn (was %s:%d [%s])."
+                          % (host, port, token[:8]))
+            else:
+                self._log("endpoint left in place (another instance owns it).")
         # Release parked catalog watchers so no client hangs on stop.
         with self._lock:
             watchers = self._watchers
@@ -500,6 +663,20 @@ class McpBridgeServer(object):
         """
         req_id = request.get("id")
         try:
+            if request.get("hello"):
+                # Identity probe: safe, executes no scene code.
+                try:
+                    tools_v = skills_registry.tools_version() \
+                        if _SKILLS_AVAILABLE else 0
+                except Exception:
+                    tools_v = 0
+                return {"id": req_id, "status": "ok",
+                        "output": "hello max_mcp_ui",
+                        "result": {"instance_id": self.instance_id,
+                                 "version": UI_VERSION,
+                                 "source": "max_mcp_ui",
+                                 "tools_version": tools_v},
+                        "error": None, "version": UI_VERSION}
             tools_cmd = request.get("tools")
             if isinstance(tools_cmd, str):
                 if tools_cmd == "list":
@@ -595,6 +772,8 @@ class McpBridgeServer(object):
             if response is _PENDING:
                 continue  # parked long-poll; holder stays waiting
             try:
+                if isinstance(response, dict):
+                    response["instance_id"] = self.instance_id
                 holder["response"] = response
             except Exception:
                 pass
@@ -1230,8 +1409,16 @@ if _QT_AVAILABLE:
             port = int(self.port_spin.value())
             ok, msg = self.server.start(host, port)
             if ok:
-                self._set_status(True, "Listening on %s:%d." % (host, port))
-                self._log(msg)
+                short = (self.server.instance_id or "")[:8]
+                try:
+                    self.port_spin.setValue(int(self.server.port))
+                except Exception:
+                    pass
+                self._set_status(True, "Listening on %s:%d [%s]." % (
+                    self.server.host, self.server.port, short))
+                self._log("%s Linked instance %s; other Max sessions are "
+                          "ignored by the MCP server."
+                          % (msg, short))
             else:
                 self._set_status(False, msg)
                 self._log("START FAILED: %s" % msg)
@@ -2190,6 +2377,13 @@ def _self_test():
             params=[{"name": "echo", "type": "str", "default": "hi",
                      "label": "Echo"}])(_tfunc)
     skills_registry.set_all_enabled(True)
+    # Pin the endpoint advertisement to a temp file: the first server.start
+    # below must not touch the real %TEMP% file on a dev machine.
+    import tempfile as _tfmod
+    _ep_dir_main = _tfmod.mkdtemp(prefix="maxmcp_ep_main_")
+    _ep_orig = os.environ.get("MAXMCP_ENDPOINT")
+    os.environ["MAXMCP_ENDPOINT"] = os.path.join(_ep_dir_main,
+                                                 "endpoint.json")
     names = sorted(skills_registry.SKILL_REGISTRY)
     print("test skills registered: %s" % names)
     for _tname, _tcat in _temps:
@@ -2376,6 +2570,74 @@ def _self_test():
         assert skills_registry.get_active_profile() == "All Skills", \
             skills_registry.get_active_profile()
         print("PASS profile save/apply/delete round-trip")
+
+        # 11. instance pinning: hello, stamps, endpoint file, fallback.
+        assert server.instance_id, "no token minted at start"
+        resp = send({"id": uuid.uuid4().hex, "hello": True})
+        assert resp.get("status") == "ok", resp
+        assert resp["result"]["instance_id"] == server.instance_id, resp
+        assert resp["result"]["source"] == "max_mcp_ui", resp
+        print("PASS hello: instance identity")
+        resp = send({"id": uuid.uuid4().hex,
+                     "code": "print(1)\n__mcp_result__ = 1"})
+        assert resp.get("instance_id") == server.instance_id, resp
+        print("PASS replies stamped with instance_id")
+        with open(os.environ["MAXMCP_ENDPOINT"], "r",
+                  encoding="utf-8") as _f:
+            _ep = json.load(_f)
+        assert _ep["instance_id"] == server.instance_id, _ep
+        assert _ep["port"] == port, _ep
+        assert _ep["host"] == "127.0.0.1", _ep
+        print("PASS endpoint file advertises this instance")
+        # A second server on the same port falls back elsewhere and takes
+        # over the advertisement; stopping the first must not steal it.
+        # The first server is pumped meanwhile so its hello probe answers.
+        logs2 = []
+        server2 = McpBridgeServer(log_fn=logs2.append,
+                                  client_fn=lambda n: None)
+        pump1_stop = threading.Event()
+
+        def _pump1():
+            while not pump1_stop.is_set():
+                try:
+                    server.pump_once()
+                except Exception:
+                    pass
+                time.sleep(0.02)
+
+        pump1_thread = threading.Thread(target=_pump1)
+        pump1_thread.daemon = True
+        pump1_thread.start()
+        try:
+            ok2, msg2 = server2.start("127.0.0.1", port)
+        finally:
+            pump1_stop.set()
+            pump1_thread.join(timeout=2.0)
+        assert ok2, msg2
+        assert server2.port != port, server2.port
+        assert server2.instance_id not in (None, server.instance_id)
+        with open(os.environ["MAXMCP_ENDPOINT"], "r",
+                  encoding="utf-8") as _f:
+            _ep2 = json.load(_f)
+        assert _ep2["instance_id"] == server2.instance_id, _ep2
+        assert _ep2["port"] == server2.port, _ep2
+        print("PASS port fallback + last-Start-wins (%d)" % server2.port)
+        server.stop()
+        assert os.path.exists(os.environ["MAXMCP_ENDPOINT"]), \
+            "first stop stole endpoint"
+        with open(os.environ["MAXMCP_ENDPOINT"], "r",
+                  encoding="utf-8") as _f:
+            assert json.load(_f)["instance_id"] == server2.instance_id
+        print("PASS stop does not clear another instance's endpoint")
+        server2.stop()
+        assert not os.path.exists(os.environ["MAXMCP_ENDPOINT"]), \
+            "endpoint left behind"
+        print("PASS stop withdraws own endpoint")
+        # Re-start the main server for the tail assertions.
+        ok, msg = server.start("127.0.0.1", 0)
+        assert ok, msg
+        port = server._server_socket.getsockname()[1]
+        print("server re-started on 127.0.0.1:%d" % port)
     finally:
         try:
             if prof_backup is None:
@@ -2401,9 +2663,18 @@ def _self_test():
         skills_registry._TOOLS_VERSION[0] = 0
 
     assert server.active_clients == 0, server.active_clients
-    assert server.total_requests == 9, server.total_requests
+    assert server.total_requests == 12, server.total_requests
     server.stop()
     assert server.queue_depth == 0
+    try:
+        if _ep_orig is None:
+            del os.environ["MAXMCP_ENDPOINT"]
+        else:
+            os.environ["MAXMCP_ENDPOINT"] = _ep_orig
+    except Exception:
+        pass
+    import shutil as _shmod
+    _shmod.rmtree(_ep_dir_main, ignore_errors=True)
     print("log lines: %d" % len(logs))
     print("ALL SELF-TESTS PASSED.")
     return 0

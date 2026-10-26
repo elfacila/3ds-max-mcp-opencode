@@ -8,7 +8,9 @@ Hub node of the vault. Every component below links back here, so Graph view rend
 OpenCode agent
     │  MCP/stdio (3 tools: get_scene_info, execute_python, create_primitive)
     ▼
-[[Bridge-Legacy|mcp_server_3dsmax.py]] ──TCP 127.0.0.1:8080──▶ [[Bridge-Legacy|max_listener.py]] (3ds Max, pump=ctypes)
+[[Bridge-Legacy|mcp_server_3dsmax.py]] ──TCP pinned instance──▶ [[Bridge-Legacy|max_listener.py]] (3ds Max, pump=ctypes)
+                                                              │  (endpoint file + instance_id token;
+                                                              │   last Start wins, others ignored)
                                                               │
 OpenCode ──MCP skill dispatch──▶ [[GUI-Plugin|McpBridgeServer]] (daemon thread + QTimer pump) ──exec──▶ [[Skills-Registry|execute_skill()]]
                                                                                                         ▲
@@ -42,5 +44,6 @@ MCP host ──tools/list + await_change──▶ enabled-only catalog ◀──
 - [[Installer]] → [[GUI-Plugin]] (deploys `max_mcp_ui.py`, launches via `toggle_mcp_ui`)
 - [[Protocol]] → [[GUI-Plugin]] + [[Bridge-Legacy]] (both speak the same envelopes)
 - Profiles → [[Protocol]] (enablement filters `tools/list`; version bumps wake `await_change`)
+- Instance pinning → [[Protocol]] (`hello` identity; endpoint file elects the linked Max; token verified pre-flight + per response)
 - [[Data-Structures]] describes the payloads on every edge above
 - [[Dev-Log]] records when each edge was built; [[Install-Guide]] is the deploy path

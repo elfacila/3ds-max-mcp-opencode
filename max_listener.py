@@ -59,6 +59,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 
 try:
     import queue  # Python 3.x
@@ -90,6 +91,14 @@ MAX_CODE_SIZE = 1024 * 1024  # 1 MB safety limit per request
 # Bump on every change; reported in each response so clients can verify
 # which script version is actually running inside 3ds Max.
 LISTENER_VERSION = "1.4.3"
+# Instance-pinning constants (mirror max_mcp_ui so every listener speaks the
+# same protocol; this file stays standalone and importable on its own).
+ENDPOINT_FILENAME = "maxmcp_endpoint.json"
+ENDPOINT_ENV = "MAXMCP_ENDPOINT"
+HELLO_TIMEOUT = 2.0
+FALLBACK_PORTS = tuple(range(8081, 8091))  # tried after PORT
+_INSTANCE_ID = None  # token minted per successful bind, stamped on replies
+_BOUND_PORT = None   # actual bound port (may differ from PORT on fallback)
 
 # ---------------------------------------------------------------------------
 # pymxs import (graceful outside of 3ds Max so the file can be syntax-checked)
@@ -109,6 +118,88 @@ except Exception as exc:  # ImportError when checked outside 3ds Max
 _MCP_NAMESPACE = {"__name__": "__mcp__", "__mcp_result__": None}
 if rt is not None:
     _MCP_NAMESPACE["rt"] = rt
+
+
+# ---------------------------------------------------------------------------
+# Instance pinning (several 3ds Max sessions may run at once). This listener
+# advertises itself in an endpoint file; the MCP server drives ONLY the
+# advertised instance and ignores the others. Last Start wins.
+# ---------------------------------------------------------------------------
+def _endpoint_path():
+    """Location of the advertised endpoint (overridable for tests)."""
+    override = os.environ.get(ENDPOINT_ENV)
+    if override:
+        return os.path.abspath(override)
+    tmp = os.environ.get("TEMP") or os.path.expanduser("~")
+    return os.path.join(tmp, ENDPOINT_FILENAME)
+
+
+def _write_endpoint(host, port, instance_id):
+    """Advertise this listener as THE linked instance. Returns bool."""
+    try:
+        payload = {"host": host, "port": int(port),
+                   "instance_id": instance_id, "pid": os.getpid(),
+                   "version": LISTENER_VERSION, "source": "max_listener"}
+        tmp = _endpoint_path() + ".tmp-%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp, _endpoint_path())
+        return True
+    except Exception:
+        return False
+
+
+def _clear_endpoint(instance_id):
+    """Remove our advertisement, but never another instance's. Returns bool."""
+    try:
+        with open(_endpoint_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict) and data.get("instance_id") == instance_id:
+            try:
+                os.remove(_endpoint_path())
+            except Exception:
+                pass
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _bound_port():
+    return _BOUND_PORT if _BOUND_PORT is not None else PORT
+
+
+def _probe_hello(host, port, timeout=HELLO_TIMEOUT):
+    """Identify whoever holds (host, port). Dict or None. Never raises."""
+    try:
+        req = (json.dumps({"id": "hello-probe", "hello": True}) + "\n"
+               ).encode("utf-8")
+        with socket.create_connection((host, port),
+                                      timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(req)
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        if not data.strip():
+            return None
+        resp = json.loads(data.decode("utf-8", errors="replace"))
+        if not isinstance(resp, dict) or resp.get("status") != "ok":
+            return None
+        result = resp.get("result") or {}
+        token = result.get("instance_id") or resp.get("instance_id")
+        if not token:
+            return None
+        return {"instance_id": str(token),
+                "version": result.get("version")
+                or resp.get("version"),
+                "source": result.get("source")}
+    except Exception:
+        return None
 
 _MCP_RUNNING = False
 _MCP_SERVER_SOCKET = None
@@ -201,6 +292,14 @@ def handle_request_line(line):
                 "result": None, "error": "Invalid JSON: %s" % exc,
                 "version": LISTENER_VERSION}
     req_id = request.get("id")
+    if request.get("hello"):
+        # Identity probe: safe, executes no scene code.
+        return {"id": req_id, "status": "ok", "output": "hello max_listener",
+                "result": {"instance_id": _INSTANCE_ID,
+                           "version": LISTENER_VERSION,
+                           "source": "max_listener"},
+                "error": None,
+                "version": LISTENER_VERSION}
     code = request.get("code")
     if code is None:
         return {"id": req_id, "status": "error", "output": "",
@@ -216,16 +315,78 @@ def _create_server_socket():
     """Create, bind and configure the listening socket (blocking mode).
 
     Blocking is fine: this socket is only ever touched by the background
-    accept thread, never by the main UI thread.
+    accept thread, never by the main UI thread. On port conflict, falls back
+    to 8081..8090 then an ephemeral port and advertises the winner, so the
+    most recently started Max becomes the linked instance (last Start wins).
     """
-    global _MCP_SERVER_SOCKET
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind((HOST, PORT))
-    srv.listen(5)
-    srv.settimeout(ACCEPT_TIMEOUT)
-    _MCP_SERVER_SOCKET = srv
-    return srv
+    global _MCP_SERVER_SOCKET, _INSTANCE_ID, _BOUND_PORT
+    # Probe-first: on Windows two SO_REUSEADDR sockets can bind the SAME
+    # port and split traffic, so "bind failed" is NOT a reliable occupancy
+    # test there. Probing hello identifies the holder without executing
+    # anything, on every platform.
+    bind_error = None
+    occupant = None
+    if PORT != 0:
+        occupant = _probe_hello(HOST, PORT)
+    if occupant is not None:
+        _log("port %d already held by %s (instance %.8s); that Max owns "
+             "it - scanning fallback ports" % (
+                 PORT, occupant.get("source") or "listener",
+                 occupant.get("instance_id")))
+        candidates = [p for p in FALLBACK_PORTS if p != PORT] + [0]
+    else:
+        candidates = [PORT] + [p for p in FALLBACK_PORTS if p != PORT] + [0]
+    for cand in candidates:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # Windows: refuse shared binds so a second listener can never
+            # silently split traffic with this one.
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind((HOST, cand))
+        except Exception as exc:
+            bind_error = exc
+            try:
+                srv.close()
+            except Exception:
+                pass
+            if cand == PORT and occupant is None:
+                found = _probe_hello(HOST, PORT)
+                if found is not None:
+                    occupant = found
+                    _log("port %d held by %s (instance %.8s)" % (
+                        PORT, found.get("source") or "listener",
+                        found.get("instance_id")))
+                else:
+                    _log("port %d unavailable (%s); scanning fallback ports"
+                         % (PORT, exc))
+            continue
+        try:
+            srv.listen(5)
+        except Exception as exc:
+            bind_error = exc
+            try:
+                srv.close()
+            except Exception:
+                pass
+            continue
+        try:
+            actual = int(srv.getsockname()[1])
+        except Exception:
+            actual = cand
+        srv.settimeout(ACCEPT_TIMEOUT)
+        _MCP_SERVER_SOCKET = srv
+        _BOUND_PORT = actual
+        _INSTANCE_ID = uuid.uuid4().hex
+        _write_endpoint(HOST, actual, _INSTANCE_ID)
+        if actual != PORT:
+            _log("fell back to port %d [instance %.8s]" % (
+                actual, _INSTANCE_ID[:8]))
+        return srv
+    raise RuntimeError("Cannot bind %s:%d nor any fallback port: %s"
+                       % (HOST, PORT, bind_error))
 
 
 def _read_request_line(conn):
@@ -247,6 +408,8 @@ def _read_request_line(conn):
 
 def _send_response(conn, response):
     try:
+        if isinstance(response, dict) and _INSTANCE_ID is not None:
+            response["instance_id"] = _INSTANCE_ID
         conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
     except Exception:
         pass
@@ -326,7 +489,8 @@ def start_socket_thread():
     worker.daemon = True
     _MCP_SOCKET_THREAD = worker
     worker.start()
-    _log("socket bound on %s:%d, accept thread started" % (HOST, PORT))
+    _log("socket bound on %s:%d instance %.8s, accept thread started"
+         % (HOST, _bound_port(), (_INSTANCE_ID or "")[:8]))
     return True
 
 
@@ -569,13 +733,14 @@ def start_listener():
               "(UI busy while serving).")
         start_max_listener_blocking()
         return _MCP_RUNNING
-    print("[max_listener] Listening on %s:%d. Max UI responsive."
-          % (HOST, PORT))
+    print("[max_listener] Listening on %s:%d [instance %s]. Max UI responsive."
+          % (HOST, _bound_port(), (_INSTANCE_ID or "")[:8]))
     print("[max_listener] Call stop_max_listener() to stop.")
     if PANEL_AUTOSHOW:
         show_listener_panel()
     else:
-        set_panel_status("Status: RUNNING on %s:%d" % (HOST, PORT))
+        set_panel_status("Status: RUNNING on %s:%d [%s]" % (
+            HOST, _bound_port(), (_INSTANCE_ID or "")[:8]))
     return True
 def _start_ctypes_timer():
     """Arm a Win32 SetTimer pump (pure stdlib ctypes, no pythonnet).
@@ -698,19 +863,28 @@ def start_max_listener_dotnet():
         return False
     if not _start_winforms_timer():
         return False
-    print("[max_listener] Listening on %s:%d (socket thread + main-thread "
-          "Timer, %d ms poll)." % (HOST, PORT, POLL_INTERVAL_MS))
+    print("[max_listener] Listening on %s:%d [instance %s] (socket thread + "
+          "main-thread Timer, %d ms poll)." % (
+              HOST, _bound_port(), (_INSTANCE_ID or "")[:8],
+              POLL_INTERVAL_MS))
     if PANEL_AUTOSHOW:
         show_listener_panel()
     else:
-        set_panel_status("Status: RUNNING on %s:%d" % (HOST, PORT))
+        set_panel_status("Status: RUNNING on %s:%d [%s]" % (
+            HOST, _bound_port(), (_INSTANCE_ID or "")[:8]))
     return True
 
 
 def stop_max_listener():
     """Stop the listener (works for native, Timer and fallback modes)."""
     global _MCP_RUNNING, _MCP_TIMER, _MCP_SERVER_SOCKET, _MCP_SOCKET_THREAD
+    global _INSTANCE_ID, _BOUND_PORT
     _MCP_RUNNING = False
+    if _INSTANCE_ID is not None:
+        if _clear_endpoint(_INSTANCE_ID):
+            _log("endpoint withdrawn [instance %.8s]" % _INSTANCE_ID[:8])
+        _INSTANCE_ID = None
+    _BOUND_PORT = None
     _unregister_native_pump()
     _stop_ctypes_timer()
     if _MCP_TIMER is not None:
@@ -756,9 +930,9 @@ def start_max_listener_blocking():
         return
     _MCP_RUNNING = True
     _log("blocking pump loop entered (UI will be busy)")
-    print("[max_listener] Listening on %s:%d (blocking pump loop). "
+    print("[max_listener] Listening on %s:%d [instance %s] (blocking pump loop). "
           "WARNING: Max UI is unresponsive until stop_max_listener() runs."
-          % (HOST, PORT))
+          % (HOST, _bound_port(), (_INSTANCE_ID or "")[:8]))
     try:
         while _MCP_RUNNING:
             try:

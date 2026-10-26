@@ -2,6 +2,14 @@
 
 Build history, newest first. Design rationale for the current state in [[System-Map]]; legacy bridge detail in [[Bridge-Legacy]].
 
+## 2026-10-26 — Instance pinning: MCP link follows one Max, ignores the rest
+
+- **Ask**: with several 3ds Max sessions open, the MCP connection must bind ONLY to the Max where Start was pressed; others ignored.
+- **Design** (last-Start-wins): every listener mints a per-start `instance_id` token, stamps it on every response, and advertises `{host, port, instance_id, pid, version, source}` in `%TEMP%/maxmcp_endpoint.json`. The MCP server resolves the endpoint file (env fallback), hello-probes before any scene code runs (cached per token — zero steady-state cost), and refuses foreign instances with a "DIFFERENT instance, press Start Server" error. Stale endpoints (crashed Max) fall back to env; unstamped legacy listeners stay allowed.
+- **Port conflicts**: probe-first (Windows `SO_REUSEADDR` allows two live binds on one port that split traffic — "bind failed" is NOT a reliable test there), fallback 8081–8090 then ephemeral, `SO_EXCLUSIVEADDRUSE` where available so a second listener can never silently split traffic. The UI status shows `[short-id]`; the port spin follows the actual bind.
+- **Files**: `mcp_server_3dsmax.py` (resolve + verify + `probe_instance` + `--ping` target line), `max_mcp_ui.py` (`hello`, stamping in `pump_once`, fallback + `stop()` endpoint hygiene, 6 new self-test asserts), `max_listener.py` (same, incl. blocking-loop prints). New `test_instance_pinning.py` (12 headless asserts vs fake listeners: match, cached, refusal-before-code, stale fallback, legacy, probe).
+- **Test found a real bug**: the first self-test run bound both servers to one port on Windows — proof the exclusive-bind fix was load-bearing, not theoretical.
+
 ## 2026-10-16 — ✅ Install saga closed: v1.2.6 confirmed working in-session
 
 - User confirmation: **"done! all is good."** No GC dialog on the v1.2.6 drop; install completes, bar + macro + panel all present.

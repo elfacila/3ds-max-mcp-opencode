@@ -2,8 +2,9 @@
 MCP Server for OpenCode <-> 3ds Max 2022 bridge (Python 3.10+).
 
 Transport to OpenCode : stdio (MCP protocol, via FastMCP).
-Transport to 3ds Max  : TCP socket to the max_listener.py server
-                        (default 127.0.0.1:8080, newline-delimited JSON).
+Transport to 3ds Max  : TCP socket to the pinned listener instance
+                        (endpoint file, else MAX_HOST:MAX_PORT env;
+                        every response verified by instance_id token).
 
 MCP Tools:
   * get_scene_info  - list all scene objects: name, type, position, poly count.
@@ -68,16 +69,108 @@ class MaxConnectionError(RuntimeError):
     """Raised when 3ds Max cannot be reached or returns an error."""
 
 
-def send_to_max(code: str, timeout: float = SOCKET_TIMEOUT) -> dict:
-    """Send one Python source string to 3ds Max, return the response dict.
+# ---------------------------------------------------------------------------
+# Instance pinning: several 3ds Max sessions may run at once. The MCP link
+# must follow ONLY the Max whose listener was started last, and ignore the
+# others. The Max side advertises itself in an endpoint file; every listener
+# response carries its instance_id token, verified here on each call.
+# Last Start wins: the endpoint file is rewritten by every Start, so the
+# most recently started listener is always the one we drive.
+# ---------------------------------------------------------------------------
+ENDPOINT_ENV = "MAXMCP_ENDPOINT"
+INSTANCE_ENV = "MAX_INSTANCE_ID"
 
-    Response keys: id, status ("ok"/"error"), output, result, error.
-    Raises MaxConnectionError on socket failure or Max-side error.
+
+def _endpoint_path() -> str:
+    """Location of the listener-advertised endpoint (overridable for tests)."""
+    override = os.environ.get(ENDPOINT_ENV)
+    if override:
+        return os.path.abspath(override)
+    tmp = os.environ.get("TEMP") or os.path.expanduser("~")
+    return os.path.join(tmp, "maxmcp_endpoint.json")
+
+
+def _read_endpoint() -> dict | None:
+    """Return {host, port, instance_id, ...} or None when absent/invalid."""
+    try:
+        with open(_endpoint_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            return None
+        host = str(data.get("host") or "")
+        port = int(data.get("port") or 0)
+        token = data.get("instance_id")
+        if not host or not port or not token:
+            return None
+        return {"host": host, "port": port, "instance_id": str(token),
+                "pid": data.get("pid"), "version": data.get("version"),
+                "source": data.get("source")}
+    except Exception:
+        return None
+
+
+def _pinned_instance() -> str | None:
+    """Explicitly pinned token (env), or None for endpoint-driven pinning."""
+    pin = os.environ.get(INSTANCE_ENV)
+    pin = pin.strip() if pin else ""
+    return pin or None
+
+
+_LAST_TARGET: list = [None]  # last (host, port, token) announced in logs
+_PIN_CACHE: dict = {}  # (host, port) -> verified token (pre-flight cache)
+
+
+def _ensure_pinned(host: str, port: int, expected: str | None,
+                   timeout: float) -> None:
+    """Refuse BEFORE any scene code runs when the holder is foreign.
+
+    Hello-probes the target and compares against the expected token. The
+    result is cached per (host, port, token), so the steady state costs
+    nothing: a new probe happens only when the endpoint advertisement
+    changes (i.e. Start was pressed somewhere). Raises MaxConnectionError
+    only for a proven-foreign holder; silence (dead target) is left to the
+    send path, which falls back to the env target.
     """
-    request = {"id": uuid.uuid4().hex, "code": code}
+    if not expected:
+        return  # unpinned (env mode, no endpoint): legacy behavior
+    if _PIN_CACHE.get((host, port)) == expected:
+        return
+    ident = probe_instance(host, port, timeout=min(timeout, 10.0))
+    if ident is None:
+        return  # nobody answered: send path will try, then env-fallback
+    if ident["instance_id"] != expected:
+        raise MaxConnectionError(
+            "3ds Max at %s:%d is a DIFFERENT instance (id %.8s, expected "
+            "%.8s). Another 3ds Max is holding this port — no code was "
+            "sent. Press Start Server in the 3ds Max you want to drive, "
+            "then retry." % (host, port, ident["instance_id"], expected)
+        )
+    _PIN_CACHE[(host, port)] = expected
+
+
+def _note_target(host: str, port: int, token: str | None) -> None:
+    key = (host, port, token)
+    if _LAST_TARGET[0] != key:
+        _LAST_TARGET[0] = key
+        short = ("%.8s" % token) if token else "unpinned"
+        logger.info("Linked to 3ds Max instance %s at %s:%d.",
+                    short, host, port)
+
+
+def _resolve_target() -> tuple[tuple[str, int], str | None, bool]:
+    """Return ((host, port), expected_token|None, from_endpoint)."""
+    ep = _read_endpoint()
+    if ep is not None:
+        return ((ep["host"], ep["port"]), ep["instance_id"], True)
+    return ((MAX_HOST, MAX_PORT), _pinned_instance(), False)
+
+
+def _send_raw(host: str, port: int, request: dict,
+              timeout: float) -> dict:
+    """One newline-delimited JSON round-trip. Raises MaxConnectionError."""
     payload = (json.dumps(request) + "\n").encode("utf-8")
     try:
-        with socket.create_connection((MAX_HOST, MAX_PORT), timeout=timeout) as sock:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(payload)
             data = b""
@@ -89,8 +182,9 @@ def send_to_max(code: str, timeout: float = SOCKET_TIMEOUT) -> dict:
     except (socket.timeout, ConnectionRefusedError, OSError) as exc:
         raise MaxConnectionError(
             "Cannot reach 3ds Max at %s:%d (%s). "
-            "Is max_listener.py running inside 3ds Max 2022 "
-            "(Scripting -> Run Script)?" % (MAX_HOST, MAX_PORT, exc)
+            "Is a listener running inside 3ds Max 2022 "
+            "(panel Start Server, or Scripting -> Run Script on "
+            "max_listener.py)?" % (host, port, exc)
         ) from exc
     if not data.strip():
         raise MaxConnectionError("Empty response from 3ds Max.")
@@ -98,10 +192,87 @@ def send_to_max(code: str, timeout: float = SOCKET_TIMEOUT) -> dict:
         response = json.loads(data.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise MaxConnectionError("Invalid JSON from 3ds Max: %s" % exc) from exc
+    return response
+
+
+def _verify_instance(response: dict, expected: str | None,
+                     host: str, port: int) -> None:
+    """Refuse responses from a different Max instance. Never returns False."""
+    if not expected or not isinstance(response, dict):
+        return
+    actual = response.get("instance_id")
+    if actual is None:
+        return  # legacy listener without tokens: allow (backward compat)
+    if str(actual) != str(expected):
+        _PIN_CACHE.pop((host, port), None)  # force a fresh probe next call
+        raise MaxConnectionError(
+            "Connected 3ds Max at %s:%d answered as a DIFFERENT instance "
+            "(id %.8s, expected %.8s). Another 3ds Max is holding this "
+            "port. Press Start Server in the 3ds Max you want to drive, "
+            "then retry." % (host, port, actual, expected)
+        )
+
+
+def probe_instance(host: str, port: int,
+                   timeout: float = 5.0) -> dict | None:
+    """Safe identity probe: never executes scene code. Returns identity or None."""
+    try:
+        response = _send_raw(
+            host, port, {"id": "probe-%s" % uuid.uuid4().hex[:8],
+                         "hello": True}, timeout)
+    except MaxConnectionError:
+        return None
+    if not isinstance(response, dict) or response.get("status") != "ok":
+        return None
+    result = response.get("result") or {}
+    token = result.get("instance_id") or response.get("instance_id")
+    if not token:
+        return None
+    return {"instance_id": str(token),
+            "version": result.get("version") or response.get("version"),
+            "source": result.get("source")}
+
+
+def send_to_max(code: str, timeout: float = SOCKET_TIMEOUT) -> dict:
+    """Send one Python source string to 3ds Max, return the response dict.
+
+    Response keys: id, status ("ok"/"error"), output, result, error.
+    Talks ONLY to the pinned instance (endpoint file, else env); a live but
+    foreign instance is refused instead of driven. Raises MaxConnectionError
+    on socket failure, stale endpoints, or Max-side error.
+    """
+    request = {"id": uuid.uuid4().hex, "code": code}
+    (host, port), expected, from_endpoint = _resolve_target()
+    _ensure_pinned(host, port, expected, timeout)
+    try:
+        response = _send_raw(host, port, request, timeout)
+    except MaxConnectionError as exc:
+        if from_endpoint:
+            # Endpoint may be stale (Max closed/crashed). Fall back to the
+            # configured env target once before giving up.
+            logger.warning("Endpoint target %s:%d unreachable (%s); "
+                           "falling back to %s:%d.",
+                           host, port, exc, MAX_HOST, MAX_PORT)
+            try:
+                response = _send_raw(MAX_HOST, MAX_PORT, request, timeout)
+                host, port = MAX_HOST, MAX_PORT
+                expected = _pinned_instance()
+            except MaxConnectionError as exc2:
+                raise MaxConnectionError(
+                    "Cannot reach 3ds Max at endpoint %s:%d nor at "
+                    "%s:%d (%s). If 3ds Max was closed, delete %s or "
+                    "press Start Server again." % (
+                        host, port, MAX_HOST, MAX_PORT, exc2,
+                        _endpoint_path())
+                ) from exc2
+        else:
+            raise
     if response.get("status") != "ok":
         raise MaxConnectionError(
             "3ds Max execution error:\n%s" % (response.get("error") or "unknown")
         )
+    _verify_instance(response, expected, host, port)
+    _note_target(host, port, response.get("instance_id") or expected)
     return response
 
 
@@ -416,6 +587,12 @@ def _cli() -> int:
     args = parser.parse_args()
 
     if args.ping:
+        (host, port), expected, from_endpoint = _resolve_target()
+        where = "endpoint file %s" % _endpoint_path() if from_endpoint \
+            else "env %s:%d" % (MAX_HOST, MAX_PORT)
+        print("Target: %s:%d (%s)%s" % (
+            host, port, where,
+            (" expected instance %.8s" % expected) if expected else ""))
         try:
             output, _ = exec_in_max('print("ping-ok")\n__mcp_result__ = "pong"')
             print("PING OK: %s" % output.strip())
