@@ -89,7 +89,7 @@ BUFFER_SIZE = 65536
 MAX_CODE_SIZE = 1024 * 1024  # 1 MB safety limit per request
 # Bump on every change; reported in each response so clients can verify
 # which script version is actually running inside 3ds Max.
-LISTENER_VERSION = "1.4.1"
+LISTENER_VERSION = "1.4.3"
 
 # ---------------------------------------------------------------------------
 # pymxs import (graceful outside of 3ds Max so the file can be syntax-checked)

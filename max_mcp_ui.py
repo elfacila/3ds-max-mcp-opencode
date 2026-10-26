@@ -107,7 +107,7 @@ CLIENT_TIMEOUT = 30.0
 EXEC_WAIT_TIMEOUT = 120.0
 BUFFER_SIZE = 65536
 MAX_CODE_SIZE = 1024 * 1024
-UI_VERSION = "1.4.1"
+UI_VERSION = "1.4.3"
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +610,7 @@ class McpBridgeServer(object):
 # Qt GUI (only defined when PySide2 imports; module stays importable without)
 # ---------------------------------------------------------------------------
 _MCP_UI_INSTANCE = None
+_MCP_DOCK_INSTANCE = None
 
 
 def _max_main_window():
@@ -931,14 +932,18 @@ if _QT_AVAILABLE:
             self.accept()
 
     class MaxMcpWindow(QtWidgets.QWidget):
-        """Floating panel: server controls, skills browser, log console."""
+        """Dockable panel: server controls, skills browser, log console.
+
+        No top-level Window flag here on purpose: show_mcp_ui() docks this
+        widget inside a QDockWidget so it snaps into the Max interface, and
+        only the floating fallback promotes it to a Window.
+        """
 
         def __init__(self, parent=None):
             super(MaxMcpWindow, self).__init__(parent)
             self.setWindowTitle("MCP Bridge : Server + Skills (3ds Max 2022)")
-            self.setMinimumSize(700, 700)
+            self.setMinimumSize(420, 600)
             self.resize(780, 760)
-            self.setWindowFlags(QtCore.Qt.Window)
             self.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
 
             self.signals = _BridgeSignals()
@@ -1916,56 +1921,223 @@ if _QT_AVAILABLE:
                 pass
             super(MaxMcpWindow, self).closeEvent(event)
 
-    def show_mcp_ui():
-        """Show (or raise) the singleton panel parented to Max when possible."""
-        global _MCP_UI_INSTANCE
+    class _McpDockWidget(QtWidgets.QDockWidget):
+        """QDockWidget host so the panel snaps into the Max interface.
+
+        Dock areas: left / right / top / bottom of the main window; the
+        title-bar undock button floats it. Closing the dock stops the
+        server + pump, mirroring MaxMcpWindow.closeEvent (floating mode).
+        """
+
+        def __init__(self, title, parent, content):
+            super(_McpDockWidget, self).__init__(title, parent)
+            self._content = content
+            self.setObjectName("MaxMCP_Dock")
+
+        def closeEvent(self, event):
+            try:
+                if self._content.server.running:
+                    self._content.server.stop()
+            except Exception:
+                pass
+            try:
+                self._content._pump.stop()
+            except Exception:
+                pass
+            super(_McpDockWidget, self).closeEvent(event)
+
+    def _dock_host():
+        """Return the Max main window when it can host a QDockWidget."""
         try:
+            parent = _max_main_window()
+            if parent is not None and hasattr(parent, "addDockWidget"):
+                return parent
+        except Exception:
+            pass
+        return None
+
+    # The macro re-runs importlib.reload on every click, which resets module
+    # globals (_MCP_UI_INSTANCE -> None) so the next toggle builds a second
+    # window instead of hiding the first. Persist the live instances on sys
+    # (never reloaded) and re-attach on entry, so toggle always finds them.
+    _SINGLETON_ATTR = "_maxmcp_singleton"
+
+    def _store_singleton():
+        try:
+            setattr(sys, _SINGLETON_ATTR,
+                    {"win": _MCP_UI_INSTANCE, "dock": _MCP_DOCK_INSTANCE})
+        except Exception:
+            pass
+
+    def _clear_singleton():
+        try:
+            setattr(sys, _SINGLETON_ATTR, {})
+        except Exception:
+            pass
+
+    def _restore_singleton():
+        """Re-attach to the live panel after a macro reload. Never raises."""
+        global _MCP_UI_INSTANCE, _MCP_DOCK_INSTANCE
+        try:
+            holder = getattr(sys, _SINGLETON_ATTR, None)
+        except Exception:
+            return
+        if not isinstance(holder, dict):
+            return
+        for key, name in (("win", "_MCP_UI_INSTANCE"),
+                          ("dock", "_MCP_DOCK_INSTANCE")):
+            if globals().get(name) is not None:
+                continue
+            try:
+                obj = holder.get(key)
+            except Exception:
+                continue
+            if obj is None:
+                continue
+            try:
+                obj.isVisible()
+            except RuntimeError:
+                continue  # C++ object deleted -- don't resurrect
+            except Exception:
+                pass
+            globals()[name] = obj
+        # A skills_registry reload wipes the notify list; re-hook the
+        # surviving window so catalog broadcasts keep working.
+        try:
+            win = _MCP_UI_INSTANCE
+            if win is not None and _SKILLS_AVAILABLE:
+                try:
+                    skills_registry.on_tools_changed(
+                        win.server._on_registry_tools_changed)
+                except Exception:
+                    pass
+                try:
+                    skills_registry.on_tools_changed(
+                        win._on_registry_tools_changed)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _show_existing():
+        """Show/raise the current host (dock when docked, window else)."""
+        host = _MCP_DOCK_INSTANCE or _MCP_UI_INSTANCE
+        if host is None:
+            return None
+        host.show()
+        try:
+            host.raise_()
+        except Exception:
+            pass
+        try:
+            host.activateWindow()
+        except Exception:
+            pass
+        return _MCP_UI_INSTANCE
+
+    def show_mcp_ui():
+        """Show (or raise) the singleton panel, docked into Max when possible.
+
+        Docked (default): the panel lives in a QDockWidget snapped to the
+        main window (drag the title bar to re-dock left/right/top/bottom,
+        or undock to float). Floating: fallback when no main window or
+        docking fails. Never opens a duplicate.
+        """
+        global _MCP_UI_INSTANCE, _MCP_DOCK_INSTANCE
+        try:
+            _restore_singleton()
             if _MCP_UI_INSTANCE is not None:
                 try:
-                    _MCP_UI_INSTANCE.show()
-                    _MCP_UI_INSTANCE.raise_()
-                    _MCP_UI_INSTANCE.activateWindow()
-                    return _MCP_UI_INSTANCE
+                    return _show_existing()
                 except Exception:
                     _MCP_UI_INSTANCE = None
+                    _MCP_DOCK_INSTANCE = None
+                    _clear_singleton()
+            host = _dock_host()
+            if host is not None:
+                try:
+                    win = MaxMcpWindow()
+                    dock = _McpDockWidget(
+                        "MCP Bridge : Server + Skills", host, win)
+                    dock.setWidget(win)
+                    dock.setAllowedAreas(
+                        QtCore.Qt.LeftDockWidgetArea
+                        | QtCore.Qt.RightDockWidgetArea
+                        | QtCore.Qt.TopDockWidgetArea
+                        | QtCore.Qt.BottomDockWidgetArea)
+                    dock.setFeatures(
+                        QtWidgets.QDockWidget.DockWidgetMovable
+                        | QtWidgets.QDockWidget.DockWidgetFloatable
+                        | QtWidgets.QDockWidget.DockWidgetClosable)
+                    host.addDockWidget(
+                        QtCore.Qt.RightDockWidgetArea, dock)
+                    _MCP_UI_INSTANCE = win
+                    _MCP_DOCK_INSTANCE = dock
+                    _store_singleton()
+                    dock.show()
+                    dock.raise_()
+                    return win
+                except Exception:
+                    try:
+                        if _MCP_DOCK_INSTANCE is not None:
+                            _MCP_DOCK_INSTANCE.close()
+                    except Exception:
+                        pass
+                    _MCP_UI_INSTANCE = None
+                    _MCP_DOCK_INSTANCE = None
+                    _clear_singleton()
+            # Floating fallback: parented top-level window, as before.
             parent = _max_main_window()
             _MCP_UI_INSTANCE = MaxMcpWindow(parent)
+            _MCP_UI_INSTANCE.setWindowFlags(QtCore.Qt.Window)
             _MCP_UI_INSTANCE.show()
+            _store_singleton()
             return _MCP_UI_INSTANCE
         except Exception:
             traceback.print_exc()
             return None
 
     def close_mcp_ui():
-        global _MCP_UI_INSTANCE
+        global _MCP_UI_INSTANCE, _MCP_DOCK_INSTANCE
+        _restore_singleton()
+        if _MCP_DOCK_INSTANCE is not None:
+            try:
+                _MCP_DOCK_INSTANCE.close()
+            except Exception:
+                pass
+            _MCP_DOCK_INSTANCE = None
         if _MCP_UI_INSTANCE is not None:
             try:
                 _MCP_UI_INSTANCE.close()
             except Exception:
                 pass
             _MCP_UI_INSTANCE = None
+        _clear_singleton()
 
     def toggle_mcp_ui():
         """Toggle the singleton panel (macro/toolbar entry point).
 
-        Shows (or raises) the window when hidden, hides it when visible.
-        Hiding preserves the instance and the running listener; closing
-        via the window [X] still stops the server through closeEvent.
-        Never opens a duplicate window.
+        Shows (docked) or raises the panel when hidden, hides it when
+        visible. Reload-proof: the macro re-imports this module on every
+        click, so instances are re-attached from the sys holder instead of
+        building a duplicate window. Hiding preserves the instance and the
+        running listener; closing via the dock/window [X] still stops the
+        server through the closeEvent handlers. Never opens a duplicate.
         """
-        global _MCP_UI_INSTANCE
+        global _MCP_UI_INSTANCE, _MCP_DOCK_INSTANCE
         try:
+            _restore_singleton()
             if _MCP_UI_INSTANCE is not None:
                 try:
-                    if _MCP_UI_INSTANCE.isVisible():
-                        _MCP_UI_INSTANCE.hide()
+                    host = _MCP_DOCK_INSTANCE or _MCP_UI_INSTANCE
+                    if host.isVisible():
+                        host.hide()
                         return None
-                    _MCP_UI_INSTANCE.show()
-                    _MCP_UI_INSTANCE.raise_()
-                    _MCP_UI_INSTANCE.activateWindow()
-                    return _MCP_UI_INSTANCE
+                    return _show_existing()
                 except Exception:
                     _MCP_UI_INSTANCE = None
+                    _MCP_DOCK_INSTANCE = None
+                    _clear_singleton()
             return show_mcp_ui()
         except Exception:
             traceback.print_exc()

@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased → v1.4.1
+## Unreleased → v1.4.3
+
+- **Toggle no longer clones**: the macro re-runs `importlib.reload` on every click, which reset the singleton — each click built a new window. Instances are now persisted on `sys` and re-attached on entry, so the icon toggles show/hide; catalog notify hooks are re-registered after the reload too. (Close duplicate windows once; from then on it toggles.)
+- **Dockable panel (v1.4.2)**: `MaxMcpWindow` lives in a `QDockWidget` snapped to the Max main window (drag to re-dock left/right/top/bottom, undock to float); floating top-level window kept as fallback; dock close stops server + pump like before.
 
 - **Empty-by-design registry (v1.4.0)**: the three demo built-ins removed; `KNOWN_CATEGORIES` keeps Scene / Geometry / Materials folders stable for manual sorting; 5 test skills in `custom_skills/` (`extrude_splines`, `floor_slab`, `drop_to_ground`, `selection_report`, `tint_selection`); `profiles_config.example.json` is the tracked template.
 - **Toolbar opt-in (v1.4.1)**: `MaxMCP_Toolbar.ms` defines `MaxMCP_showBar()` but shows nothing; installer closes leftover bars and skips the native-CUI probe; `MCP Tools` menu is the default entry.
 - **Skill parity (v1.3.0)**: `mcp_server_3dsmax.py` gained `list_available_skills` + `execute_skill` (was primitives-only); portable relative-path `opencode.json` (enabled); `requirements.txt` pinned `mcp>=2.0,<3`.
-- **Legacy cleanup**: `max_listener.py` marked legacy, shadowed `_register_native_pump` (undefined `NATIVE_PUMP_MXS`) removed; versions unified (`1.4.1`); `max-ultra-mcp` entries removed from project + global configs; `README.md` added.
+- **Legacy cleanup**: `max_listener.py` marked legacy, shadowed `_register_native_pump` (undefined `NATIVE_PUMP_MXS`) removed; versions unified (`1.4.2`); `max-ultra-mcp` entries removed from project + global configs; `README.md` added.
 
 ## Listener (`max_listener.py`)
 

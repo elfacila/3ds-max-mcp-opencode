@@ -55,7 +55,7 @@ except Exception:
     rt = None
     _IN_MAX = False
 
-SKILLS_VERSION = "1.4.1"
+SKILLS_VERSION = "1.4.3"
 
 # name -> SkillSpec
 SKILL_REGISTRY = {}

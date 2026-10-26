@@ -13,7 +13,7 @@ One JSON object per line (UTF-8), one request → one response, short-lived conn
 
 ## Responses
 
-`{"id", "status": "ok"|"error", "output", "result", "error", "version"}` — version `1.4.1` (listener legacy + UI unified) identifies the running side. Catalog answers additionally carry `tools_version` and `update: "changed"` on watch wake-ups.
+`{"id", "status": "ok"|"error", "output", "result", "error", "version"}` — version `1.4.3` (listener legacy + UI unified) identifies the running side. Catalog answers additionally carry `tools_version` and `update: "changed"` on watch wake-ups.
 
 ## Dispatch paths (to [[System-Map]])
 

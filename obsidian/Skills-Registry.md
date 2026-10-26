@@ -1,4 +1,4 @@
-# Skills Registry (`skills_registry.py`, v1.4.1)
+# Skills Registry (`skills_registry.py`, v1.4.3)
 
 Transport-free skill store. Skills know nothing about sockets or Qt; the SAME function runs from the UI and from MCP dispatch — see [[System-Map]].
 

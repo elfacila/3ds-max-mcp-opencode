@@ -4,7 +4,7 @@ OpenCode <-> 3ds Max 2022 bridge: MCP stdio server on the host, TCP socket to a
 main-thread pump inside Max, plus an optional Qt GUI plugin with a skill
 framework.
 
-## Components (v1.4.1, single version across all files)
+## Components (v1.4.3, single version across all files)
 
 - `mcp_server_3dsmax.py` — MCP stdio server (what OpenCode launches).
   Tools: `get_scene_info`, `execute_python`, `create_primitive`,

@@ -1,4 +1,4 @@
-# GUI Plugin (`max_mcp_ui.py`, v1.4.1)
+# GUI Plugin (`max_mcp_ui.py`, v1.4.3 — dockable, reload-proof toggle)
 
 PySide2 panel for 3ds Max 2022 (Python 3.7). Parents to `qtmax.GetQMaxMainWindow()`; all Qt/pymxs imports guarded so transport + registry stay headless-testable.
 
@@ -8,7 +8,7 @@ PySide2 panel for 3ds Max 2022 (Python 3.7). Parents to `qtmax.GetQMaxMainWindow
 - **MaxMcpWindow** — checkbox skill tree in a draggable `QSplitter` (no width cap; tri-state category headers; `● ON/OFF/RUN` status badges) + dynamic param form (`QLineEdit`/`QSpinBox`/`QDoubleSpinBox`/`QCheckBox`/`QComboBox`, incl. `node` type) + read-only console + Clear Log.
 - **Profile bar** — preset combo (instant apply), Save/Overwrite, New (+), Delete (−, All Skills protected), Select/Deselect All. Switches log `[PROFILE] Switched to 'X' (N active skills)`; catalog broadcasts `[MCP] tools/list_changed (vN)`.
 - **Manage Skills toolbar** — Add New Skill (`AddSkillDialog`: fields + params table + template generator + code editor, `ast` gate before write), Import Skill (`QFileDialog` + pre-copy syntax gate), Edit Skill (file-backed only, id locked), Open Skills Folder (`os.startfile`), Reload Skills (`_hot_reload()` with added/removed diff + reselect).
-- **Entry points** — `show_mcp_ui()` / `toggle_mcp_ui()` (macro calls toggle; never duplicates). Close [X] stops the server via `closeEvent`; hide preserves it.
+- **Entry points** — `show_mcp_ui()` / `toggle_mcp_ui()` (macro calls toggle; never duplicates — instances persist on `sys` across the macro's per-click `importlib.reload`, re-attached on entry). Panel docks into the main window (`QDockWidget`, all sides + floatable); floating window is the fallback. Close [X] stops the server via `closeEvent`; hide preserves it.
 
 ## Safety rules
 

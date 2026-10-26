@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.4.1)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.4.3)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -25,7 +25,7 @@
         cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.4.1"
+global MaxMCP_version = "1.4.3"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
