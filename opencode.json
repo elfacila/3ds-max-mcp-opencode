@@ -1,16 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "3dsmax": {
-      "type": "local",
-      "command": ["python", "C:/Users/Slava Ryzen 2024/Documents/Opencode/Projects/Vantage Submitter/3dsmax-mcp/mcp_server_3dsmax.py"],
-      "enabled": true,
-      "environment": {
-        "MAX_HOST": "127.0.0.1",
-        "MAX_PORT": "8080",
-        "MAX_TIMEOUT": "30"
-      },
-      "timeout": 10000
+    "servers": {
+      "3dsmax": {
+        "type": "local",
+        "command": ["python", "mcp_server_3dsmax.py"],
+        "environment": {
+          "MAX_HOST": "127.0.0.1",
+          "MAX_PORT": "8080",
+          "MAX_TIMEOUT": "30"
+        }
+      }
     }
   }
 }

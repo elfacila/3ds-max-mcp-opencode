@@ -55,7 +55,7 @@ except Exception:
     rt = None
     _IN_MAX = False
 
-SKILLS_VERSION = "1.2.0"
+SKILLS_VERSION = "1.4.1"
 
 # name -> SkillSpec
 SKILL_REGISTRY = {}
@@ -75,6 +75,10 @@ PROFILE_MINIMAL = "Minimal / None"
 # Categories composing the default "Floor Plan Shell" profile
 # (modeling + spline cleanup; camera/lighting excluded).
 SHELL_CATEGORIES = ("Scene Management", "Geometry & Modifiers")
+# Well-known category folders. Always shown in the UI tree (even when empty)
+# so manually added skills can be sorted into Geometry / Materials / Scene.
+KNOWN_CATEGORIES = ("Scene Management", "Geometry & Modifiers",
+                    "Materials & Cameras")
 _ENABLED = set()          # live enabled skill names; default = everything
 _PROFILES = None          # lazy {"active_profile": str, "profiles": {...}}
 _PROFILES_ERROR = None    # last profiles-file problem (surfaced in UI)
@@ -198,12 +202,12 @@ def register_skill(name, category="General", description="", params=None,
 
     Usage::
 
-        @register_skill(name="scene_cleaner",
+        @register_skill(name="my_skill",
                          category="Scene Management",
                          description="...",
                          params=[{"name": "dry_run", "type": "bool",
                                   "default": False, "label": "Dry run"}])
-        def scene_cleaner(dry_run=False):
+        def my_skill(dry_run=False):
             return {"ok": True}
 
     The skill's ``source`` is attributed automatically: functions defined
@@ -259,8 +263,12 @@ def list_enabled_skills():
 
 
 def skills_by_category(enabled_only=False):
-    """Return {category: [skill_dict, ...]} with skills sorted by name."""
-    grouped = {}
+    """Return {category: [skill_dict, ...]} with skills sorted by name.
+
+    Well-known categories are always present (possibly empty) so the UI
+    keeps stable Geometry / Materials / Scene folders for manual sorting.
+    """
+    grouped = {cat: [] for cat in KNOWN_CATEGORIES}
     for skill in list_skills(enabled_only=enabled_only):
         grouped.setdefault(skill["category"], []).append(skill)
     return grouped
@@ -332,7 +340,7 @@ def build_skill_code(name, params=None):
     Compatible with the existing newline-delimited {"id","code"} socket
     protocol used by max_listener.py / max_mcp_ui.py, e.g.::
 
-        send_to_max(build_skill_code("scene_cleaner", {"dry_run": True}))
+        send_to_max(build_skill_code("my_skill", {"dry_run": True}))
     """
     payload = json.dumps(params or {}, sort_keys=True)
     # NOTE: runs inside 3ds Max (Python 3.7): keep it simple, no f-strings
@@ -973,340 +981,11 @@ def reload_skills():
 
 
 # ---------------------------------------------------------------------------
-# Built-in demo skills
+# Built-in skills: none. The registry starts empty; all skills are user-added
+# via custom_skills/ (Add / Import / Reload in the UI) and sorted into the
+# well-known categories below. Keeping the category folders stable means an
+# empty tree still shows Geometry / Materials / Scene Management for sorting.
 # ---------------------------------------------------------------------------
-
-@register_skill(
-    name="scene_cleaner",
-    category="Scene Management",
-    description=(
-        "Detach isolated vertices on mesh/poly objects, run garbage "
-        "collection, and report scene / material counts. "
-        "Safe: per-object errors are collected, never raised."
-    ),
-    params=[
-        {"name": "remove_isolated_verts", "type": "bool", "default": True,
-         "label": "Remove isolated verts",
-         "help": "Delete vertices not referenced by any face."},
-        {"name": "clean_unused_materials", "type": "bool", "default": True,
-         "label": "Clean unused materials",
-         "help": "Flush unassigned scene materials (best effort)."},
-        {"name": "dry_run", "type": "bool", "default": False,
-         "label": "Dry run (report only)",
-         "help": "Count what WOULD change without modifying the scene."},
-    ],
-)
-def scene_cleaner(remove_isolated_verts=True,
-                  clean_unused_materials=True, dry_run=False):
-    """Skill A: scene hygiene + counts report."""
-    if not _IN_MAX:
-        return {"ok": True, "dry_run_echo": True,
-                "message": "pymxs unavailable (outside 3ds Max); "
-                           "no scene touched.",
-                "params": {"remove_isolated_verts": bool(remove_isolated_verts),
-                           "clean_unused_materials": bool(clean_unused_materials),
-                           "dry_run": bool(dry_run)},
-                "removed_isolated_verts": 0,
-                "cleaned_materials": 0,
-                "objects_scanned": 0}
-    removed_verts = 0
-    scanned = 0
-    failed = []
-    mat_before = 0
-    mat_after = 0
-    try:
-        with_undo = getattr(rt, "withUndo", None)
-        if with_undo is not None:
-            rt.withUndo("MCP Scene Cleaner", True)
-    except Exception:
-        pass
-    try:
-        try:
-            all_objs = list(rt.objects)
-        except Exception:
-            all_objs = []
-        try:
-            mat_before = len(list(rt.sceneMaterials))
-        except Exception:
-            try:
-                mat_before = len(list(rt.currentMaterialLibrary or []))
-            except Exception:
-                mat_before = 0
-        if remove_isolated_verts and not dry_run:
-            for obj in all_objs:
-                try:
-                    scanned += 1
-                    if not rt.isKindOf(obj, rt.GeometryClass):
-                        continue
-                    base = rt.getMesh(obj) if hasattr(rt, "getMesh") else None
-                    # meshop.deleteIsoVerts returns the number removed.
-                    try:
-                        if rt.isKindOf(obj, rt.Editable_Poly):
-                            n = int(rt.polyop.deleteIsoVerts(obj))
-                            removed_verts += max(0, n)
-                        else:
-                            before = int(rt.meshop.getNumVerts(obj))
-                            rt.meshop.deleteIsoVerts(obj)
-                            try:
-                                rt.update(obj)
-                            except Exception:
-                                pass
-                            after = int(rt.meshop.getNumVerts(obj))
-                            removed_verts += max(0, before - after)
-                    except Exception as exc:
-                        failed.append("%s: %s" % (getattr(obj, "name", "?"), exc))
-                except Exception as exc:
-                    failed.append("scan: %s" % exc)
-        else:
-            try:
-                scanned = len(all_objs)
-            except Exception:
-                scanned = 0
-        if clean_unused_materials and not dry_run:
-            try:
-                # Best-effort purge: collect garbage; unassigned materials
-                # held only by the medit slots survive, scene refs stay valid.
-                rt.gc()
-            except Exception as exc:
-                failed.append("gc: %s" % exc)
-        try:
-            mat_after = len(list(rt.sceneMaterials))
-        except Exception:
-            mat_after = mat_before
-    finally:
-        try:
-            if getattr(rt, "withUndo", None) is not None:
-                rt.withUndo("MCP Scene Cleaner", False)
-        except Exception:
-            pass
-    cleaned = max(0, mat_before - mat_after)
-    print("scene_cleaner: scanned=%d iso_verts_removed=%d "
-          "materials_before=%d after=%d dry_run=%s"
-          % (scanned, removed_verts, mat_before, mat_after, dry_run))
-    return {"ok": True,
-            "objects_scanned": scanned,
-            "removed_isolated_verts": int(removed_verts),
-            "scene_materials_before": int(mat_before),
-            "scene_materials_after": int(mat_after),
-            "cleaned_materials": int(cleaned),
-            "dry_run": bool(dry_run),
-            "failures": failed[:20],
-            "failure_count": len(failed)}
-
-
-@register_skill(
-    name="batch_modifier_applier",
-    category="Geometry & Modifiers",
-    description=(
-        "Apply one modifier (TurboSmooth, UVW Map, Smooth, Bend, Taper) "
-        "to every selected node with user-defined parameters."
-    ),
-    params=[
-        {"name": "modifier_type", "type": "choice", "default": "TurboSmooth",
-         "label": "Modifier",
-         "choices": ["TurboSmooth", "UVWMap", "Smooth", "Bend", "Taper"],
-         "help": "Which modifier to add on top of each node."},
-        {"name": "iterations", "type": "int", "default": 1,
-         "label": "Iterations / Amount", "min": 0, "max": 4,
-         "help": "TurboSmooth iterations (0-4). For Bend/Taper used as angle/amount."},
-        {"name": "uvw_length", "type": "float", "default": 10.0,
-         "label": "UVW length", "min": 0.01, "max": 10000.0},
-        {"name": "uvw_width", "type": "float", "default": 10.0,
-         "label": "UVW width", "min": 0.01, "max": 10000.0},
-        {"name": "apply_to_all_if_no_selection", "type": "bool",
-         "default": False, "label": "All objects if nothing selected",
-         "help": "Fall back to all geometry when selection is empty."},
-    ],
-)
-def batch_modifier_applier(modifier_type="TurboSmooth", iterations=1,
-                           uvw_length=10.0, uvw_width=10.0,
-                           apply_to_all_if_no_selection=False):
-    """Skill B: one modifier across the current selection."""
-    if not _IN_MAX:
-        return {"ok": True, "dry_run_echo": True,
-                "message": "pymxs unavailable (outside 3ds Max).",
-                "params": {"modifier_type": modifier_type,
-                           "iterations": int(iterations),
-                           "uvw_length": float(uvw_length),
-                           "uvw_width": float(uvw_width)},
-                "applied": 0, "skipped": 0}
-    mtype = str(modifier_type)
-    applied = 0
-    skipped = 0
-    details = []
-
-    def _build_modifier():
-        if mtype == "TurboSmooth":
-            mod = rt.TurboSmooth()
-            try:
-                mod.iterations = int(iterations)
-            except Exception:
-                pass
-            return mod
-        if mtype == "UVWMap":
-            mod = rt.UVWMap()
-            try:
-                mod.length = float(uvw_length)
-                mod.width = float(uvw_width)
-            except Exception:
-                pass
-            return mod
-        if mtype == "Smooth":
-            return rt.Smooth()
-        if mtype == "Bend":
-            mod = rt.Bend()
-            try:
-                mod.bendAngle = float(iterations) * 15.0
-            except Exception:
-                pass
-            return mod
-        if mtype == "Taper":
-            mod = rt.Taper()
-            try:
-                mod.amount = float(iterations) * 0.2
-            except Exception:
-                pass
-            return mod
-        raise ValueError("Unsupported modifier_type: %r" % mtype)
-
-    try:
-        targets = list(rt.selection)
-    except Exception:
-        targets = []
-    if not targets and apply_to_all_if_no_selection:
-        try:
-            targets = [o for o in list(rt.objects)
-                       if rt.isKindOf(o, rt.GeometryClass)]
-        except Exception:
-            targets = []
-    if not targets:
-        return {"ok": False,
-                "error": "Nothing selected. Select nodes first or enable "
-                         "'All objects if nothing selected'.",
-                "applied": 0, "skipped": 0}
-    for node in targets:
-        try:
-            if not rt.isKindOf(node, rt.GeometryClass):
-                skipped += 1
-                details.append("%s: skipped (not geometry)" % getattr(node, "name", "?"))
-                continue
-            rt.addModifier(node, _build_modifier())
-            applied += 1
-        except Exception as exc:
-            skipped += 1
-            details.append("%s: %s" % (getattr(node, "name", "?"), exc))
-    print("batch_modifier_applier: %s x%d applied=%d skipped=%d"
-          % (mtype, len(targets), applied, skipped))
-    return {"ok": True, "modifier": mtype,
-            "targets": len(targets), "applied": applied,
-            "skipped": skipped, "details": details[:20]}
-
-
-@register_skill(
-    name="camera_light_setup",
-    category="Materials & Cameras",
-    description=(
-        "Create a Physical camera aligned to the active viewport plus a "
-        "sun + skylight (dome) rig. Renderer-agnostic fallbacks included."
-    ),
-    params=[
-        {"name": "camera_name", "type": "str", "default": "MCP_PhysicalCam",
-         "label": "Camera name"},
-        {"name": "fov", "type": "float", "default": 45.0,
-         "label": "FOV (deg)", "min": 5.0, "max": 120.0},
-        {"name": "create_sun", "type": "bool", "default": True,
-         "label": "Create sun light"},
-        {"name": "sun_angle", "type": "float", "default": 45.0,
-         "label": "Sun elevation (deg)", "min": 0.0, "max": 90.0},
-        {"name": "create_dome", "type": "bool", "default": True,
-         "label": "Create skylight (dome)"},
-    ],
-)
-def camera_light_setup(camera_name="MCP_PhysicalCam", fov=45.0,
-                       create_sun=True, sun_angle=45.0, create_dome=True):
-    """Skill C: viewport-matched camera + sun/dome lighting."""
-    safe_name = (str(camera_name) or "MCP_PhysicalCam").replace('"', "").replace("\\", "")
-    if not _IN_MAX:
-        return {"ok": True, "dry_run_echo": True,
-                "message": "pymxs unavailable (outside 3ds Max).",
-                "params": {"camera_name": safe_name, "fov": float(fov),
-                           "create_sun": bool(create_sun),
-                           "sun_angle": float(sun_angle),
-                           "create_dome": bool(create_dome)},
-                "created": []}
-    created = []
-    warnings = []
-    try:
-        view_tm = None
-        try:
-            view_tm = rt.viewport.getViewTM()
-        except Exception as exc:
-            warnings.append("viewport TM unavailable: %s" % exc)
-        cam = None
-        try:
-            cam = rt.PhysicalCamera()
-            cam.name = safe_name
-        except Exception:
-            try:
-                cam = rt.TargetCamera()
-                cam.name = safe_name
-            except Exception as exc:
-                return {"ok": False, "error": "Cannot create camera: %s" % exc}
-        try:
-            if view_tm is not None:
-                cam.transform = view_tm
-        except Exception as exc:
-            warnings.append("camera align failed: %s" % exc)
-        try:
-            # PhysicalCamera uses film width / focal length; fov maps
-            # approximately. TargetCamera takes fov directly.
-            if rt.classOf(cam) == rt.PhysicalCamera:
-                try:
-                    cam.fov = float(fov)
-                except Exception:
-                    pass
-            else:
-                cam.fov = float(fov)
-        except Exception as exc:
-            warnings.append("fov set failed: %s" % exc)
-        created.append(str(cam.name))
-        if create_sun:
-            try:
-                try:
-                    sun = rt.Sun()
-                except Exception:
-                    sun = rt.DirectionalLight()
-                sun.name = safe_name + "_Sun"
-                try:
-                    import math
-                    elev = math.radians(float(sun_angle))
-                    dist = 500.0
-                    sun.pos = rt.Point3(0,
-                                        -dist * __import__("math").cos(elev),
-                                        dist * __import__("math").sin(elev))
-                except Exception:
-                    pass
-                created.append(str(sun.name))
-            except Exception as exc:
-                warnings.append("sun failed: %s" % exc)
-        if create_dome:
-            try:
-                try:
-                    dome = rt.Skylight()
-                except Exception:
-                    dome = rt.OmniLight()
-                dome.name = safe_name + "_Dome"
-                created.append(str(dome.name))
-            except Exception as exc:
-                warnings.append("dome failed: %s" % exc)
-    except Exception:
-        return {"ok": False, "error": traceback.format_exc()}
-    print("camera_light_setup: created=%s warnings=%d"
-          % (created, len(warnings)))
-    return {"ok": True, "camera": safe_name, "fov": float(fov),
-            "created": created, "warnings": warnings}
-
-
 # ---------------------------------------------------------------------------
 # Custom skills autoload: scan custom_skills/ once at import so the UI and
 # the MCP dispatch agree from the start.  Per-file errors are recorded in

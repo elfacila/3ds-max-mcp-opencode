@@ -13,7 +13,7 @@ End-to-end deployment of MaxMCP into 3ds Max 2022. For the design behind each st
 1. Drag `MaxMCP_Plugin.mzp` into any 3ds Max viewport (or Scripting → Run Script → select it).
 2. `mzp.run` fires `run "install.ms"` / `drop "install.ms"` → the installer runs automatically.
 3. Confirm the summary dialog: Python dir, macro, menu, toolbar lines.
-4. A docked **MCP Tools** button bar appears immediately; **Max MCP** button toggles the panel. Also present: main-menu `MCP Tools` entry.
+4. No button bar appears — it is **opt-in since v1.4.1**. Open the panel via the main-menu `MCP Tools` entry (or run `MaxMCP_showBar()` in the Listener for the docked bar).
 
 ## Where things land
 
@@ -34,7 +34,7 @@ End-to-end deployment of MaxMCP into 3ds Max 2022. For the design behind each st
 
 ## After a reboot
 
-The button bar returns automatically via Startup Scripts — open the Listener and confirm the `[MaxMCP] toolbar` lines (created → docked). If they are absent, `MaxMCP_Toolbar.ms` is not in Startup Scripts: re-drop the `.mzp`. If the bar reports FAILED, paste the error. At any time you can also run `MaxMCP_showBar()` in the Listener, or Scripting → Run Script → the toolbar file, to bring the bar back without reinstalling.
+The button bar stays hidden: the Startup script only defines `MaxMCP_showBar()` — open the Listener and confirm the `[MaxMCP] toolbar ... hidden by default` lines. If they are absent, `MaxMCP_Toolbar.ms` is not in Startup Scripts: re-drop the `.mzp`. To show the bar at any time, run `MaxMCP_showBar()` in the Listener. The `MCP Tools` menu and the Customize-dragged icon (below) work with no bar at all.
 
 ## Update / uninstall
 
@@ -43,7 +43,7 @@ The button bar returns automatically via Startup Scripts — open the Listener a
 
 ## Putting the icon on another toolbar
 
-The bundled docked bar is deliberately tiny (60×34, "MCP" button). For a normal-size icon alongside your other tools:
+The bundled docked bar is deliberately tiny (60×34, "MCP" button) and hidden by default. For a normal-size icon alongside your other tools (the recommended setup):
 
 1. Customize → Customize User Interface → **Toolbars** tab.
 2. Category: **MCP Tools** → drag **Max MCP** onto any toolbar (e.g. the main toolbar).

@@ -1,4 +1,4 @@
-# GUI Plugin (`max_mcp_ui.py`, v1.2.0)
+# GUI Plugin (`max_mcp_ui.py`, v1.4.1)
 
 PySide2 panel for 3ds Max 2022 (Python 3.7). Parents to `qtmax.GetQMaxMainWindow()`; all Qt/pymxs imports guarded so transport + registry stay headless-testable.
 

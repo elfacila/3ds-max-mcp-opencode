@@ -107,7 +107,7 @@ CLIENT_TIMEOUT = 30.0
 EXEC_WAIT_TIMEOUT = 120.0
 BUFFER_SIZE = 65536
 MAX_CODE_SIZE = 1024 * 1024
-UI_VERSION = "1.2.0"
+UI_VERSION = "1.4.1"
 
 
 # ---------------------------------------------------------------------------
@@ -1994,11 +1994,41 @@ def _self_test():
 
     print("== max_mcp_ui self-test ==")
     assert _SKILLS_AVAILABLE, "skills_registry failed: %s" % (_SKILLS_ERROR,)
+    # Registry starts empty by design (no built-ins); the test registers
+    # one temp skill per well-known category and removes them afterwards.
+    _temps = [
+        ("_selftest_geom", "Geometry & Modifiers"),
+        ("_selftest_mat", "Materials & Cameras"),
+        ("_selftest_scene", "Scene Management"),
+    ]
+    for _tname, _tcat in _temps:
+        try:
+            if _tname in skills_registry.SKILL_REGISTRY:
+                del skills_registry.SKILL_REGISTRY[_tname]
+            skills_registry._ENABLED.discard(_tname)
+        except Exception:
+            pass
+    for _tname, _tcat in _temps:
+        def _tfunc(echo="hi", _n=_tname):
+            return {"ok": True, "echo": echo, "name": _n}
+        _tfunc.__name__ = _tname
+        skills_registry.register_skill(
+            name=_tname, category=_tcat,
+            description="Self-test skill (%s)." % _tcat,
+            params=[{"name": "echo", "type": "str", "default": "hi",
+                     "label": "Echo"}])(_tfunc)
+    skills_registry.set_all_enabled(True)
     names = sorted(skills_registry.SKILL_REGISTRY)
-    print("skills registered: %s" % names)
-    assert "scene_cleaner" in names
-    assert "batch_modifier_applier" in names
-    assert "camera_light_setup" in names
+    print("test skills registered: %s" % names)
+    for _tname, _tcat in _temps:
+        assert _tname in names, _tname
+    # Empty categories stay visible for manual sorting.
+    grouped = skills_registry.skills_by_category()
+    for _tname, _tcat in _temps:
+        assert _tcat in grouped, _tcat
+    # Customs present in custom_skills/ stay loaded alongside the temps;
+    # "All Skills" therefore advertises baseline + 3.
+    _n_all = len(skills_registry.SKILL_REGISTRY)
 
     logs = []
     server = McpBridgeServer(log_fn=logs.append, client_fn=lambda n: None)
@@ -2041,17 +2071,18 @@ def _self_test():
         return json.loads(data.decode("utf-8"))
 
     # 1. skill dispatch (dry-run outside Max).
-    resp = send({"id": uuid.uuid4().hex, "skill": "scene_cleaner",
-                 "params": {"dry_run": True}})
+    resp = send({"id": uuid.uuid4().hex, "skill": "_selftest_scene",
+                 "params": {"echo": "hello"}})
     assert resp.get("status") == "ok", resp
     assert resp["result"].get("ok") is True, resp
-    print("PASS skill dispatch: scene_cleaner")
+    assert resp["result"].get("echo") == "hello", resp
+    print("PASS skill dispatch: _selftest_scene")
 
     # 2. tool alias + arguments alias.
-    resp = send({"id": uuid.uuid4().hex, "tool": "batch_modifier_applier",
-                 "arguments": {"modifier_type": "TurboSmooth",
-                               "iterations": 2}})
+    resp = send({"id": uuid.uuid4().hex, "tool": "_selftest_geom",
+                 "arguments": {"echo": "alias"}})
     assert resp.get("status") == "ok", resp
+    assert resp["result"].get("echo") == "alias", resp
     print("PASS tool/arguments aliases")
 
     # 3. legacy code path.
@@ -2072,6 +2103,8 @@ def _self_test():
     print("PASS malformed-request error")
 
     # 6. profiles: defaults exist, apply filters the advertised catalog.
+    # The on-disk shell list may reference retired names, so the test
+    # overwrites it with the temp skills first (file is backed up).
     prof_path = skills_registry.profiles_path()
     prof_backup = None
     if os.path.exists(prof_path):
@@ -2082,11 +2115,14 @@ def _self_test():
         assert skills_registry.get_all_profiles() == [
             "All Skills", "Floor Plan Shell", "Minimal / None"], \
             skills_registry.get_all_profiles()
+        ok, msg = skills_registry.save_profile(
+            "Floor Plan Shell", ["_selftest_geom", "_selftest_scene"])
+        assert ok, msg
         v0 = skills_registry.tools_version()
         rep = skills_registry.apply_profile("Floor Plan Shell")
         assert rep["ok"] and rep["total"] == 2, rep
         assert sorted(rep["enabled"]) == [
-            "batch_modifier_applier", "scene_cleaner"], rep
+            "_selftest_geom", "_selftest_scene"], rep
         assert rep["version"] == v0 + 1, rep
         print("PASS profile apply: Floor Plan Shell (2 active)")
 
@@ -2096,32 +2132,38 @@ def _self_test():
         assert resp["result"]["version"] == v0 + 1, resp
         assert resp["result"]["active_profile"] == "Floor Plan Shell", resp
         names = sorted(s["name"] for s in resp["result"]["skills"])
-        assert names == ["batch_modifier_applier", "scene_cleaner"], names
+        assert names == ["_selftest_geom", "_selftest_scene"], names
         print("PASS tools/list: enabled-only catalog")
 
         # 8. remote dispatch refuses disabled skills; local override works.
+        ok, msg = skills_registry.save_profile(
+            "Test Solo", ["_selftest_geom"])
+        assert ok, msg
+        rep = skills_registry.apply_profile("Test Solo")
+        assert rep["ok"] and rep["total"] == 1, rep
+        v1 = rep["version"]
         resp = send({"id": uuid.uuid4().hex,
-                     "skill": "camera_light_setup", "params": {}})
+                     "skill": "_selftest_scene", "params": {}})
         assert resp.get("status") == "error", resp
         assert "disabled" in (resp.get("error") or ""), resp
         print("PASS disabled skill refused over the wire")
         direct = skills_registry.execute_skill(
-            "camera_light_setup", {}, enforce_enabled=False)
+            "_selftest_scene", {}, enforce_enabled=False)
         assert direct.get("ok") is True, direct
         print("PASS explicit local override executes")
 
         # 9. await_change: stale version answers at once; live version parks
         # until the next catalog change, then wakes with the new catalog.
         resp = send({"id": uuid.uuid4().hex, "tools": "await_change",
-                     "version": v0})
+                     "version": v1 - 1})
         assert resp.get("status") == "ok", resp
-        assert resp["result"]["version"] == v0 + 1, resp
+        assert resp["result"]["version"] == v1, resp
         print("PASS await_change: stale version answers immediately")
         box = {}
         watch = threading.Thread(
             target=lambda: box.update(resp=send(
                 {"id": uuid.uuid4().hex, "tools": "await_change",
-                 "version": v0 + 1})))
+                 "version": v1})))
         watch.daemon = True
         watch.start()
         deadline = time.time() + 5.0
@@ -2129,14 +2171,14 @@ def _self_test():
             time.sleep(0.02)
         assert server._watchers, "watcher never parked"
         rep = skills_registry.apply_profile("All Skills")
-        assert rep["ok"] and rep["total"] == 3, rep
+        assert rep["ok"] and rep["total"] == _n_all, rep
         watch.join(timeout=10.0)
         assert not watch.is_alive(), "watcher never woke"
         resp = box["resp"]
         assert resp.get("status") == "ok", resp
         assert resp.get("update") == "changed", resp
-        assert resp["result"]["version"] == v0 + 2, resp
-        assert len(resp["result"]["skills"]) == 3, resp
+        assert resp["result"]["version"] == v1 + 1, resp
+        assert len(resp["result"]["skills"]) == _n_all, resp
         print("PASS await_change: parked watch wakes on profile switch")
 
         # 10. profile CRUD guards.
@@ -2147,15 +2189,17 @@ def _self_test():
         assert not ok, msg
         print("PASS All Skills overwrite refused")
         ok, msg = skills_registry.save_profile(
-            "Test Preset", ["scene_cleaner", "nope"])
+            "Test Preset", ["_selftest_geom", "nope"])
         assert not ok and "nope" in msg, msg
         print("PASS unknown skill names rejected on save")
         ok, msg = skills_registry.save_profile(
-            "Test Preset", ["scene_cleaner"])
+            "Test Solo", ["_selftest_mat"])
         assert ok, msg
-        rep = skills_registry.apply_profile("Test Preset")
-        assert rep["ok"] and rep["enabled"] == ["scene_cleaner"], rep
+        rep = skills_registry.apply_profile("Test Solo")
+        assert rep["ok"] and rep["enabled"] == ["_selftest_mat"], rep
         ok, msg = skills_registry.delete_profile("Test Preset")
+        assert not ok, msg  # never saved (rejected above)
+        ok, msg = skills_registry.delete_profile("Test Solo")
         assert ok, msg
         assert skills_registry.get_active_profile() == "All Skills", \
             skills_registry.get_active_profile()
@@ -2170,6 +2214,16 @@ def _self_test():
                     _f.write(prof_backup)
         except Exception:
             pass
+        for _tname, _tcat in _temps:
+            try:
+                if _tname in skills_registry.SKILL_REGISTRY:
+                    del skills_registry.SKILL_REGISTRY[_tname]
+            except Exception:
+                pass
+            try:
+                skills_registry._ENABLED.discard(_tname)
+            except Exception:
+                pass
         skills_registry._PROFILES = None
         skills_registry.apply_profile("All Skills")
         skills_registry._TOOLS_VERSION[0] = 0

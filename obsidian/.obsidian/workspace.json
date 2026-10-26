@@ -11,10 +11,14 @@
             "id": "3ccfae31d3a3df09",
             "type": "leaf",
             "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "type": "markdown",
+              "state": {
+                "file": "Protocol.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Protocol"
             }
           },
           {
@@ -23,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Bridge-Legacy.md",
+                "file": "Protocol.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Bridge-Legacy"
+              "title": "Protocol"
             }
           }
         ]
@@ -93,7 +97,8 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 200,
+    "collapsed": true
   },
   "right": {
     "id": "1af03440f9658970",
@@ -109,6 +114,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "Protocol.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -196,15 +202,15 @@
   },
   "active": "3ccfae31d3a3df09",
   "lastOpenFiles": [
-    "Bridge-Legacy.md",
-    "Dev-Log.md",
-    "Install-Guide.md",
-    "System-Map.md",
+    "Data-Structures.md",
     "Skills-Registry.md",
-    "Installer.md",
     "Protocol.md",
+    "System-Map.md",
+    "Dev-Log.md",
+    "Installer.md",
+    "Bridge-Legacy.md",
+    "Install-Guide.md",
     "Home.md",
-    "GUI-Plugin.md",
-    "Data-Structures.md"
+    "GUI-Plugin.md"
   ]
 }

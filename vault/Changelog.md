@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased → v1.4.1
+
+- **Empty-by-design registry (v1.4.0)**: the three demo built-ins removed; `KNOWN_CATEGORIES` keeps Scene / Geometry / Materials folders stable for manual sorting; 5 test skills in `custom_skills/` (`extrude_splines`, `floor_slab`, `drop_to_ground`, `selection_report`, `tint_selection`); `profiles_config.example.json` is the tracked template.
+- **Toolbar opt-in (v1.4.1)**: `MaxMCP_Toolbar.ms` defines `MaxMCP_showBar()` but shows nothing; installer closes leftover bars and skips the native-CUI probe; `MCP Tools` menu is the default entry.
+- **Skill parity (v1.3.0)**: `mcp_server_3dsmax.py` gained `list_available_skills` + `execute_skill` (was primitives-only); portable relative-path `opencode.json` (enabled); `requirements.txt` pinned `mcp>=2.0,<3`.
+- **Legacy cleanup**: `max_listener.py` marked legacy, shadowed `_register_native_pump` (undefined `NATIVE_PUMP_MXS`) removed; versions unified (`1.4.1`); `max-ultra-mcp` entries removed from project + global configs; `README.md` added.
+
 ## Listener (`max_listener.py`)
 
 - **1.6.1-ctypes** — ctypes `SetTimer` pump; fixed `UINT_PTR` → `c_size_t` (missing on Python 3.7); blocking fallback reuses the bound socket; WinForms failures logged.

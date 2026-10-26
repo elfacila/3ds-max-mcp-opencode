@@ -1,6 +1,12 @@
 """
 3ds Max 2022 TCP Listener Script (Python 3.7 / pymxs compatible).
 
+LEGACY / MINIMAL bridge. Canonical transport is now max_mcp_ui.McpBridgeServer
+(full GUI plugin: skill dispatch, tools/list + await_change, profiles).
+This file is kept for headless/minimal use and as protocol reference.
+New work should target max_mcp_ui.py; both bind 127.0.0.1:8080 by default,
+so run only ONE bridge at a time.
+
 Run inside 3ds Max 2022 via: Scripting -> Run Script -> select this file.
 (or drag-drop the file into a 3ds Max viewport, or MAXScript Listener:
     python.ExecuteFile @"C:/path/to/max_listener.py")
@@ -83,7 +89,7 @@ BUFFER_SIZE = 65536
 MAX_CODE_SIZE = 1024 * 1024  # 1 MB safety limit per request
 # Bump on every change; reported in each response so clients can verify
 # which script version is actually running inside 3ds Max.
-LISTENER_VERSION = "1.6.1-ctypes"
+LISTENER_VERSION = "1.4.1"
 
 # ---------------------------------------------------------------------------
 # pymxs import (graceful outside of 3ds Max so the file can be syntax-checked)
@@ -673,27 +679,10 @@ def _start_winforms_timer():
     return True
 
 
-def _register_native_pump():
-    """Register the MAXScript time-callback pump. Returns True on success."""
-    if rt is None:
-        return False
-    try:
-        rt.execute(NATIVE_PUMP_MXS)
-    except Exception as exc:
-        _log("registerTimeCallback failed: %s" % exc)
-        return False
-    _NATIVE_ON[0] = True
-    _log("native time-callback pump registered")
-    return True
-
-
-def _unregister_native_pump():
-    if rt is not None:
-        try:
-            rt.execute(NATIVE_UNPUMP_MXS)
-        except Exception:
-            pass
-    _NATIVE_ON[0] = False
+# NOTE: native time-callback pump was removed (see _register_native_pump stub
+# above). No second definition: the stub is the single source of truth, since
+# 3ds Max 2022 pymxs has no rt.execute and the callback never fires in a
+# static scene.
 
 
 def start_max_listener_dotnet():

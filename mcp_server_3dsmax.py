@@ -9,6 +9,10 @@ MCP Tools:
   * get_scene_info  - list all scene objects: name, type, position, poly count.
   * execute_python  - run arbitrary Python/pymxs code inside 3ds Max.
   * create_primitive - create Box/Sphere/Teapot/Cylinder/Cone/Torus/Plane, etc.
+  * list_available_skills - query the live skill catalog inside 3ds Max
+    (tools version, active profile, enabled skills with schemas).
+  * execute_skill - run one named skill inside 3ds Max with a params dict.
+    Honors the active profile: disabled skills are refused over the wire.
 
 Run standalone for debugging:
     python mcp_server_3dsmax.py --ping
@@ -162,6 +166,22 @@ __mcp_result__ = {"count": len(items), "objects": items}
 print("scene_info: %d objects" % len(items))
 """
 
+# Query the live skill catalog INSIDE 3ds Max (authoritative: reflects the
+# active profile and hot-reloaded custom skills on the Max side, which the
+# host process cannot see directly - its custom_skills/ dir differs).
+SKILLS_CATALOG_CODE = r"""
+import skills_registry
+__mcp_result__ = {
+    "version": skills_registry.tools_version(),
+    "active_profile": skills_registry.get_active_profile(),
+    "skills": skills_registry.list_enabled_skills(),
+}
+print("skills: v%d %d enabled (%s)" % (
+    __mcp_result__["version"],
+    len(__mcp_result__["skills"]),
+    __mcp_result__["active_profile"]))
+"""
+
 
 def build_create_code(
     primitive_type: str,
@@ -306,11 +326,78 @@ def create_primitive(
     return "Created %s: %s" % (primitive_type, detail)
 
 
+def list_available_skills() -> str:
+    """List the skills currently advertised by 3ds Max.
+
+    Queries the live registry inside 3ds Max (active profile + enabled
+    skills with param schemas). Falls back to the host-side registry
+    import when 3ds Max is unreachable, so discovery still works offline.
+    """
+    try:
+        output, result = exec_in_max(SKILLS_CATALOG_CODE)
+    except MaxConnectionError:
+        try:
+            import skills_registry as _sr
+            result = {
+                "version": _sr.tools_version(),
+                "active_profile": _sr.get_active_profile(),
+                "skills": _sr.list_enabled_skills(),
+            }
+            body = json.dumps(result, indent=2)
+            return "Skills (offline fallback, 3ds Max unreachable):\n%s" % body
+        except Exception as exc:
+            return "ERROR: %s" % exc
+    body = json.dumps(result, indent=2) if result is not None else output
+    return "Skills (%s):\n%s" % (output.strip(), body)
+
+
+def execute_skill(skill: str, params: dict | None = None) -> str:
+    """Run one named skill inside 3ds Max with a params dict.
+
+    Args:
+        skill: Skill name, e.g. "my_skill".
+        params: Dict of skill params (merged over schema defaults).
+    Honors the active profile: disabled skills are refused over the wire.
+    """
+    name = (skill or "").strip()
+    if not name:
+        return "ERROR: 'skill' must be a non-empty string."
+    args = dict(params) if isinstance(params, dict) else {}
+    try:
+        import skills_registry as _sr
+        code = _sr.build_skill_code(name, args)
+    except Exception:
+        code = (
+            "import skills_registry\n"
+            "__mcp_result__ = skills_registry.execute_skill(%r, %s)\n"
+            % (name, json.dumps(args, sort_keys=True))
+        )
+    try:
+        output, result = exec_in_max(code)
+    except MaxConnectionError as exc:
+        return "ERROR: %s" % exc
+    if isinstance(result, dict) and not result.get("ok"):
+        return "Skill %r FAILED: %s\n%s" % (
+            name, result.get("error", "unknown error"),
+            json.dumps(result, indent=2))
+    parts = []
+    if output.strip():
+        parts.append("Output:\n%s" % output.strip())
+    if result is not None:
+        try:
+            parts.append("Result:\n%s" % json.dumps(result, indent=2))
+        except TypeError:
+            parts.append("Result:\n%r" % (result,))
+    return "\n".join(parts) if parts else "OK (no output)."
+
+
 # Register the tools with the MCP server (no rebinding: the names above stay
 # plain callables for the standalone CLI on any SDK version).
 mcp.tool()(get_scene_info)
 mcp.tool()(execute_python)
 mcp.tool()(create_primitive)
+mcp.tool()(list_available_skills)
+mcp.tool()(execute_skill)
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +407,8 @@ def _cli() -> int:
     parser = argparse.ArgumentParser(description="3ds Max MCP server / tester")
     parser.add_argument("--ping", action="store_true", help="socket check only")
     parser.add_argument("--scene", action="store_true", help="call get_scene_info")
+    parser.add_argument("--skills", action="store_true",
+                        help="query live skill catalog (offline fallback ok)")
     parser.add_argument(
         "--box", action="store_true",
         help="create Box 10x10x10 at origin, then get_scene_info",
@@ -336,6 +425,9 @@ def _cli() -> int:
             return 1
     if args.scene:
         print(get_scene_info())
+        return 0
+    if args.skills:
+        print(list_available_skills())
         return 0
     if args.box:
         print(create_primitive("Box", "MCP_Box", 10.0, 10.0, 10.0, 10.0,

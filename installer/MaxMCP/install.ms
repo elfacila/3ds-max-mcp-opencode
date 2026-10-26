@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MaxMCP Plugin Installer for 3ds Max 2022  (v1.2.6)
+   MaxMCP Plugin Installer for 3ds Max 2022  (v1.4.1)
    --------------------------------------------------------------------------
    INSTALL:   drag this file -- or the MaxMCP_Plugin.mzp -- into a viewport.
               The installer runs automatically on fileIn.
@@ -14,17 +14,18 @@
         (userMacros auto-load on every later startup).
      3. Copies MaxMCP_24i.bmp / MaxMCP_16i.bmp into (getDir #userIcons)
         and links them to the macroScript definition.
-     4. Installs MaxMCP_Toolbar.ms into (getDir #startupScripts) and runs
-        it now: a docked "MCP Tools" button bar appears immediately and is
-        re-registered at every startup (persists across sessions).
+     4. Installs MaxMCP_Toolbar.ms into (getDir #startupScripts) as an
+        OPT-IN helper only (bar hidden by default; run MaxMCP_showBar()
+        to show it) and hides any bar left over from an earlier install.
+        The "MCP Tools" menu from step 5 is the default entry point.
      5. Adds a persistent "MCP Tools" menu to the main menu bar via the
         menuMan API (stored in the menu file: sticky across sessions).
      6. Probes for a native CUI toolbar API; whatever the outcome, the
-        docked button bar from step 4 is always set up as the visible entry
-        point, and cui.saveConfig() persists the UI state.
+        "MCP Tools" menu (step 5) is the visible entry point, and
+        cui.saveConfig() persists the UI state.
    ========================================================================== */
 
-global MaxMCP_version = "1.2.6"
+global MaxMCP_version = "1.4.1"
 global MaxMCP_category = "MCP Tools"
 global MaxMCP_macroName = "MaxMCP_Launcher"
 global MaxMCP_barTitle = "MCP Tools"
@@ -408,11 +409,13 @@ fn MaxMCP_install =
         )
     )
 
-    -- 4. Button bar: Max runs BOTH Startup folders at launch (system-wide
-    -- under Program Files AND per-user under #userScripts). The system one
-    -- needs elevation, so prefer it only when writable; otherwise the
-    -- per-user Startup folder, which needs none. Either way the bar
-    -- auto-returns after every reboot.
+    -- 4. Button bar (OPT-IN, hidden by default): Max runs BOTH Startup
+    -- folders at launch (system-wide under Program Files AND per-user under
+    -- #userScripts). The system one needs elevation, so prefer it only when
+    -- writable; otherwise the per-user Startup folder, which needs none.
+    -- The file only DEFINES MaxMCP_showBar(); nothing is shown at startup.
+    -- Any bar left visible by an earlier install is closed below so the new
+    -- default (hidden) applies immediately, without waiting for a reboot.
     local userStartupDir = (getDir #userScripts) + "/Startup/"
     local barDst = startupDir + "MaxMCP_Toolbar.ms"
     local barOK = MaxMCP_copyOne (srcDir + "MaxMCP_Toolbar.ms") barDst
@@ -424,10 +427,15 @@ fn MaxMCP_install =
     )
     if (barOK) do
     (
+        -- Make the opt-in command available this session (defines only,
+        -- shows nothing), then hide any leftover bar from v1.4.0 or older.
         try (fileIn barDst) catch
         (
-            print "[MaxMCP] WARNING: button bar will appear after restart."
+            print "[MaxMCP] WARNING: toolbar helper not loaded this session; run MaxMCP_showBar() after restart."
         )
+        try (cui.unRegisterDialogBar MaxMCP_BarRO) catch ()
+        try (destroyDialog MaxMCP_BarRO) catch ()
+        print "[MaxMCP] toolbar: hidden by default (run MaxMCP_showBar() to show)."
     )
 
     -- 4b. Install receipt: proves (now and after any reboot) exactly what
@@ -464,8 +472,11 @@ fn MaxMCP_install =
     -- 5. Persistent main-menu entry.
     local menuOK = MaxMCP_ensureMenu()
 
-    -- 6. Native CUI toolbar attempt (best effort; bar from step 4 covers us).
-    local nativeOK = MaxMCP_tryNativeToolbar()
+    -- 6. Native CUI toolbar: SKIPPED by design (toolbar is opt-in since
+    -- v1.4.1). The "MCP Tools" menu (step 5) plus MaxMCP_showBar() cover
+    -- entry; uncomment the probe below to restore the old auto-show.
+    local nativeOK = false
+    -- local nativeOK = MaxMCP_tryNativeToolbar()
 
     -- 7. Persist UI state (Max also saves on exit).
     try (cui.saveConfig()) catch
@@ -484,8 +495,8 @@ fn MaxMCP_install =
         " macro live=" + (macroLive as string))
 
     local menuTxt = (if menuOK then "added" else "SKIPPED (see Listener)")
-    local barTxt = (if nativeOK then "native CUI toolbar" else "compact docked bar")
-    if (barOK) do (barTxt = barTxt + " (" + barDst + ")")
+    local barTxt = "hidden by default (opt-in: run MaxMCP_showBar())"
+    if (barOK) do (barTxt = barTxt + " [" + barDst + "]")
     if (not barOK) do (barTxt = "SKIPPED (copy failed)")
     local regTxt = (if macroLive then "yes" else "NO - restart Max, then re-check")
     local persistTxt = (if (persistMacro and persistBar and persistPy) then "all present" else "MISSING FILES (see Listener)")
@@ -495,9 +506,8 @@ fn MaxMCP_install =
         "Menu:  " + menuTxt + "\n" + \
         "Toolbar:  " + barTxt + "\n" + \
         "Reboot files:  " + persistTxt + "\n\n" + \
-        "Press the MCP button to show/hide the panel.\n" + \
-        "After a Max restart the bar returns via Startup Scripts " + \
-        "(watch the Listener for the '[MaxMCP] toolbar' lines).\n\n" + \
+        "Open the panel via the MCP Tools menu (or press the MCP button if you enabled the bar).\n" + \
+        "The button bar is hidden by default; to show it, run MaxMCP_showBar() in the Listener.\n\n" + \
         "Tip: for a permanent icon on any existing toolbar, open Customize > Customize User Interface > Toolbars, pick category 'MCP Tools', and drag 'Max MCP' onto that toolbar."
     print ("[MaxMCP] " + summary)
     messageBox summary title:"MaxMCP installed"

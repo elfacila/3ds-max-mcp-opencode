@@ -1,18 +1,24 @@
 /* ==========================================================================
-   MaxMCP_Toolbar.ms — compact floating/docked "MCP" button.
-   The installer copies this file into (getDir #startupScripts) so 3ds Max
-   runs it at every startup (the button persists across sessions), and
-   fileIns it once immediately so it appears without a restart.
-   Safe to re-run: any previous bar instance is unregistered first.
+   MaxMCP_Toolbar.ms — compact floating/docked "MCP" button (OPT-IN).
+
+   OFF BY DEFAULT: this file only DEFINES the rollout and MaxMCP_showBar().
+   It never shows anything on its own — not at install, not at startup.
+   To show the button bar, run MaxMCP_showBar() in the Listener, or use the
+   "MCP Tools" menu / macro instead. To hide it again, run:
+       try (cui.unRegisterDialogBar MaxMCP_BarRO) catch ()
+       try (destroyDialog MaxMCP_BarRO) catch ()
+   The installer copies this file into (getDir #startupScripts) so the
+   opt-in command is available every session, and fileIns it once so
+   MaxMCP_showBar() exists immediately without a restart.
+   Safe to re-run: defining it again changes nothing visible.
    The button calls the "MCP Tools" > "MaxMCP_Launcher" macroScript, so the
    toggle logic (no duplicate windows) lives in one place: max_mcp_ui.py.
 
    Every step prints to the Listener: after a reboot, open the Listener and
    look for the "[MaxMCP] toolbar" lines. If they are absent, this file is
-   not in Startup Scripts (re-run the installer). If MaxMCP_showBar()
-   reports FAILED, paste the error.
-   Manual recovery at any time: Scripting > Run Script > this file, or run
-   MaxMCP_showBar() in the Listener.
+   not in Startup Scripts (re-run the installer).
+   Manual show at any time: Scripting > Run Script > this file (defines
+   only), then run MaxMCP_showBar() in the Listener.
 
    To place the icon on ANOTHER toolbar instead (e.g. the main toolbar):
    Customize > Customize User Interface > Toolbars > Category "MCP Tools"
@@ -38,9 +44,9 @@ rollout MaxMCP_BarRO "MCP" width:60 height:34
 
 fn MaxMCP_showBar =
 (
-    -- (Re)create + dock the button bar. Returns true on success.
-    -- Called automatically below (install + every Max startup) and usable
-    -- manually from the Listener if the bar ever goes missing.
+    -- Show the opt-in button bar on demand. Returns true on success.
+    -- NOT called automatically: run this from the Listener when you want
+    -- the bar. Safe to re-run: any previous bar instance is removed first.
     local ok = false
     try
     (
@@ -68,5 +74,5 @@ fn MaxMCP_showBar =
     ok
 )
 
-print "[MaxMCP] toolbar startup script running ..."
-MaxMCP_showBar()
+print "[MaxMCP] toolbar startup script loaded (bar hidden by default)."
+print "[MaxMCP] toolbar: run MaxMCP_showBar() to show the MCP button."

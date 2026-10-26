@@ -11,9 +11,9 @@ One-click deploy: `installer/MaxMCP_Plugin.mzp` — 10 files at zip root (incl. 
 1. Copies payload to `#userScripts/MaxMCP/` (overwrite = update; `importlib.reload` makes it live, no restart).
 2. Registers macro `MCP Tools > Max MCP` from `#userMacros/MaxMCP_Launcher.ms` (auto-loads every session).
 3. Icons → `#userIcons/`, linked via `Icon:#("MaxMCP",1)` in the macro.
-4. Button bar → `#startupScripts/MaxMCP_Toolbar.ms`, fileIn'd immediately (docked, re-registered each startup).
-5. `MCP Tools` main-menu entry via `menuMan.registerMenuContext` (fixed id `0x4D435031`, sticky).
-6. Native-CUI toolbar probe (best-effort; docked bar is the guaranteed toolbar).
+4. Button bar → `#startupScripts/MaxMCP_Toolbar.ms` as an OPT-IN helper (defines `MaxMCP_showBar()` only, shows nothing); any bar left by an older install is closed.
+5. `MCP Tools` main-menu entry via `menuMan.registerMenuContext` (fixed id `0x4D435031`, sticky) — the default entry point.
+6. Native-CUI toolbar probe SKIPPED by design since v1.4.1 (menu + opt-in bar cover entry).
 7. `cui.saveConfig()` persists UI state.
 
 ## Hard-won fixes (see [[Dev-Log]])

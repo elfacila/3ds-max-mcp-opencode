@@ -19,4 +19,4 @@ Obsidian vault for the **MaxMCP** project — MCP bridge + GUI plugin + skills s
 
 ## Quick status
 
-Listener `1.6.1-ctypes` live on `127.0.0.1:8080` · UI `1.2.0` · Skills `1.2.0` · Installer `1.2.6` (10-file MZP) · repo: `elfacila/3ds-max-mcp-opencode` (`master`).
+Listener `1.4.1` (legacy, hidden-gem) live on `127.0.0.1:8080` · UI `1.4.1` · Skills `1.4.1` (empty by design) · Installer `1.4.1` (10-file MZP, toolbar opt-in) · repo: `elfacila/3ds-max-mcp-opencode` (`master`).

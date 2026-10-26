@@ -28,7 +28,7 @@ SkillSpec(
 ```json
 {"active_profile": "Floor Plan Shell",
  "profiles": {"All Skills": null,
-              "Floor Plan Shell": ["batch_modifier_applier", "scene_cleaner"],
+              "Floor Plan Shell": [],
               "Minimal / None": []}}
 ```
 
